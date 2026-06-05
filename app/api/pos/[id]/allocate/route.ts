@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { ok, handler } from "@/lib/api";
 import { currentActor } from "@/lib/auth";
 import { writeAudit } from "@/lib/services/audit";
+import { sendPoPreparationEmail } from "@/lib/integrations/po-test-email";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,23 @@ const schema = z.object({
   ),
 });
 
-/** Persist per-SKU approved quantities for one PO (called on cell edit / save). */
+const FACILITY_KEYS = ["facilityname", "facility_name", "facility", "warehouse", "outlet", "store", "dcname", "dc", "destination"];
+const DISPATCH_KEYS = ["dispatchfrom", "dispatch_from", "sourcewh", "source_wh", "sourcecode", "fromwh", "fromwarehouse", "senderfacility"];
+
+function extractRaw(obj: unknown, keys: string[]): string {
+  if (!obj || typeof obj !== "object") return "—";
+  const data = obj as Record<string, unknown>;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const key of Object.keys(data)) {
+    if (keys.includes(norm(key))) {
+      const v = data[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  }
+  return "—";
+}
+
+/** Persist per-SKU approved quantities for one PO and email abhishek@ about preparation. */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   return handler("POST /api/pos/[id]/allocate", async () => {
     const actor = await currentActor();
@@ -40,6 +57,62 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       });
     });
 
-    return ok({ poId: params.id, lines: allocations.length });
+    // Build and send the PO-preparation email with the real PO data.
+    let emailMessageId: string | null = null;
+    try {
+      const po = await prisma.purchaseOrder.findUnique({
+        where: { id: params.id },
+        select: {
+          channelPoNumber: true,
+          rawData: true,
+          channel: { select: { name: true } },
+          lineItems: {
+            select: {
+              skuId: true,
+              approvedQty: true,
+              channelSkuCode: true,
+              rawData: true,
+              sku: { select: { internalCode: true } },
+            },
+          },
+        },
+      });
+
+      if (po) {
+        // Build allocation map from the just-saved values
+        const allocMap = Object.fromEntries(allocations.map((a) => [a.skuId, a.approvedQty]));
+
+        // Extract location from PO rawData, fall back to first line item rawData
+        const firstLineRaw = po.lineItems[0]?.rawData;
+        const location =
+          extractRaw(po.rawData, FACILITY_KEYS) !== "—"
+            ? extractRaw(po.rawData, FACILITY_KEYS)
+            : extractRaw(firstLineRaw, FACILITY_KEYS);
+
+        const dispatchFrom =
+          extractRaw(po.rawData, DISPATCH_KEYS) !== "—"
+            ? extractRaw(po.rawData, DISPATCH_KEYS)
+            : extractRaw(firstLineRaw, DISPATCH_KEYS);
+
+        const result = await sendPoPreparationEmail({
+          poNumber: po.channelPoNumber ?? params.id,
+          channel: po.channel.name,
+          location,
+          dispatchFrom,
+          lines: po.lineItems
+            .filter((l) => (allocMap[l.skuId] ?? l.approvedQty ?? 0) > 0)
+            .map((l) => ({
+              sku: l.channelSkuCode ?? l.sku.internalCode,
+              qty: allocMap[l.skuId] ?? l.approvedQty ?? 0,
+            })),
+        });
+        emailMessageId = result.messageId;
+      }
+    } catch (err) {
+      // Email failure is non-fatal — allocation is already saved.
+      console.error("[allocate] email send failed:", err);
+    }
+
+    return ok({ poId: params.id, lines: allocations.length, emailMessageId });
   });
 }

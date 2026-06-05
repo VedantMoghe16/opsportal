@@ -134,6 +134,11 @@ const schema = z.object({
   INSTAMART_AUTO_SYNC: z.string().default("true"), // "false" to disable
   INSTAMART_SYNC_INTERVAL_HOURS: z.coerce.number().positive().default(3),
 
+  // Test PO email (Gmail SMTP, FROM amritya@moxiebeauty.in)
+  PO_TEST_EMAIL_SMTP_USER: z.string().default("amritya@moxiebeauty.in"),
+  PO_TEST_EMAIL_SMTP_PASS: z.string().optional(), // Gmail app password (strip spaces)
+  PO_TEST_EMAIL_TO: z.string().default("abhishek@moxiebeauty.in"),
+
   // Company
   COMPANY_NAME: z.string().default("Moxie Beauty Pvt Ltd"),
   COMPANY_GSTIN: z.string().default("29ABCDE1234F1Z5"),
