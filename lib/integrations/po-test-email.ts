@@ -1,6 +1,6 @@
 import "server-only";
 import nodemailer from "nodemailer";
-import { env, requireEnv } from "@/lib/env.js";
+import { env, requireEnv } from "@/lib/env";
 
 export interface PoPreparationEmailResult {
   messageId: string;
