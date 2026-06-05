@@ -1,0 +1,40 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# env
+.env
+.env.local
+.env*.local
+
+# prisma
+/prisma/*.db
+/prisma/*.db-journal
+
+# misc
+.DS_Store
+*.pem
+/coverage
+npm-debug.log*
+.vercel
+*.tsbuildinfo
+
+# playwright
+/playwright-report
+/test-results
+
+# python
+__pycache__/
+*.pyc
+
+# large media assets
+*.mp4

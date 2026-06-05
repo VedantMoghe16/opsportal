@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/poll-emails",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/check-timers",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/scrape-portals",
+      "schedule": "0 9,17 * * *"
+    },
+    {
+      "path": "/api/cron/blinkit-sync",
+      "schedule": "0 */3 * * *"
+    }
+  ]
+}

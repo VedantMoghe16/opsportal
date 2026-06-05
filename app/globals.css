@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ───────────────────────────────────────────────────────────────
+ * Moxie × LeapAI design tokens
+ * Moxie brand  → warm cream canvas, lime accent, ink type
+ * LeapAI feel  → floating white cards, big radius, soft shadows, airy spacing
+ * ───────────────────────────────────────────────────────────────
+ */
+@layer base {
+  :root {
+    /* Canvas + surfaces */
+    --canvas: 44 38% 95%;            /* warm cream page background */
+    --background: 44 38% 95%;
+    --foreground: 40 12% 9%;         /* warm near-black ink */
+    --card: 0 0% 100%;
+    --card-foreground: 40 12% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 40 12% 9%;
+
+    /* Brand */
+    --brand-lime: 72 76% 56%;        /* Moxie "add to cart" lime */
+    --brand-lime-soft: 72 70% 90%;
+    --brand-mint: 162 52% 76%;       /* product mint/teal */
+    --brand-lav: 248 60% 95%;        /* LeapAI lavender wash */
+
+    /* Primary = lime, with ink foreground (lime is too light for white text) */
+    --primary: 72 76% 50%;
+    --primary-foreground: 40 18% 10%;
+
+    --secondary: 44 30% 92%;
+    --secondary-foreground: 40 12% 14%;
+
+    --muted: 44 24% 93%;
+    --muted-foreground: 40 6% 42%;
+
+    --accent: 248 60% 95%;
+    --accent-foreground: 248 40% 30%;
+
+    --destructive: 0 72% 56%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Semantic */
+    --success: 158 64% 42%;
+    --warning: 38 92% 50%;
+    --danger: 0 72% 56%;
+    --info: 224 76% 58%;
+
+    --border: 42 16% 88%;
+    --input: 42 16% 86%;
+    --ring: 72 70% 46%;
+
+    /* Sidebar — warm charcoal ink */
+    --sidebar: 40 14% 11%;
+    --sidebar-foreground: 44 30% 92%;
+    --sidebar-muted: 40 8% 62%;
+    --sidebar-accent: 72 76% 56%;
+
+    --radius: 0.9rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-canvas text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  }
+
+  /* Tabular numerals for all data tables / money / quantities */
+  .nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /* Custom slim scrollbars to match the airy aesthetic */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(40 10% 80%);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(40 10% 70%);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* Soft gradient wash used behind the app shell (LeapAI vibe, Moxie hue) */
+  .app-wash {
+    background:
+      radial-gradient(1200px 600px at 100% -10%, hsl(248 60% 96%) 0%, transparent 55%),
+      radial-gradient(900px 500px at -10% 0%, hsl(162 52% 92%) 0%, transparent 45%),
+      hsl(var(--canvas));
+  }
+
+  /* Skeleton shimmer */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-muted;
+  }
+  .skeleton::after {
+    @apply absolute inset-0;
+    content: "";
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.65),
+      transparent
+    );
+    animation: shimmer 1.6s infinite;
+  }
+}

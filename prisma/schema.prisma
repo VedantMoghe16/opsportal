@@ -1,0 +1,336 @@
+// Moxie Beauty — D2C Operations Management System
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Channel {
+  id                   String   @id @default(cuid())
+  name                 String
+  emailDomain          String   @unique // nykaa.com
+  poSenderEmail        String? // specific PO sender address
+  grnSenderEmail       String?
+  tier                 String   @default("B") // A, B, C
+  fillRateCommitment   Float    @default(90.0) // % minimum fill
+  deliverySlaHours     Int      @default(48)
+  billingGstin         String?
+  billingAddress       String?
+  logoColor            String? // brand accent for the UI chip
+  portalUrl            String?
+  portalUsername       String?
+  portalPasswordEnvVar String? // name of env var holding password
+  grnViaEmail          Boolean  @default(true)
+  grnViaPortal         Boolean  @default(false)
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+  channelSkus    ChannelSku[]
+}
+
+model Sku {
+  id           String   @id @default(cuid())
+  internalCode String   @unique
+  name         String
+  category     String?
+  hsnCode      String?
+  gstRate      Float    @default(18.0)
+  uom          String   @default("unit")
+  casePackSize Int      @default(1)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  channelSkus        ChannelSku[]
+  poLineItems        PoLineItem[]
+  dispatchLineItems  DispatchLineItem[]
+  grnLineItems       GrnLineItem[]
+  discrepancies      Discrepancy[]
+  inventorySnapshots InventorySnapshot[]
+}
+
+model ChannelSku {
+  id             String  @id @default(cuid())
+  channelId      String
+  skuId          String
+  channelSkuCode String // e.g. NKA-0124
+  channelMoq     Int     @default(1)
+  unitPrice      Float?
+
+  channel Channel @relation(fields: [channelId], references: [id])
+  sku     Sku     @relation(fields: [skuId], references: [id])
+
+  @@unique([channelId, channelSkuCode])
+  @@index([skuId])
+}
+
+model PurchaseOrder {
+  id                    String    @id @default(cuid())
+  channelId             String
+  channelPoNumber       String?
+  gmailMessageId        String?   @unique // idempotency key (email source)
+  externalId            String?   @unique // idempotency key (channel imports, e.g. "blinkit:<poNo>")
+  source                String    @default("EMAIL") // EMAIL | BLINKIT | NYKAA | PORTAL | MANUAL
+  status                PoStatus  @default(PENDING_REVIEW)
+  priority              String? // P1, P2, P3
+  priorityScore         Int? // computed by AI (1-100)
+  priorityRationale     String?
+  poDate                DateTime?
+  requestedDeliveryDate DateTime?
+  totalRequestedValue   Float?
+  opsNotes              String?
+  approvedBy            String?
+  approvedAt            DateTime?
+  rawEmailBody          String?   @db.Text
+  rawEmailSubject       String?
+  rawData               Json? // full original source fields (e.g. all Blinkit PO columns)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  channel              Channel               @relation(fields: [channelId], references: [id])
+  lineItems            PoLineItem[]
+  warehouseInstruction WarehouseInstruction?
+  dispatchRecord       DispatchRecord?
+  deliveryRecord       DeliveryRecord?
+  grnRecord            GrnRecord?
+  invoice              Invoice?
+  auditLogs            AuditLog[]
+
+  @@index([channelId])
+  @@index([status])
+  @@index([source])
+  @@index([createdAt])
+}
+
+enum PoStatus {
+  PENDING_REVIEW
+  PRIORITISED
+  ALLOCATED
+  APPROVED
+  DISPATCHED
+  DELIVERED
+  GRN_RECEIVED
+  CLOSED
+  DISCREPANCY
+  ON_HOLD
+}
+
+model PoLineItem {
+  id             String  @id @default(cuid())
+  poId           String
+  skuId          String
+  channelSkuCode String?
+  requestedQty   Int
+  approvedQty    Int?
+  unitPrice      Float?
+  rawData        Json? // full original source row fields
+
+  po  PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  sku Sku           @relation(fields: [skuId], references: [id])
+
+  @@index([poId])
+  @@index([skuId])
+}
+
+model InventorySnapshot {
+  id          String   @id @default(cuid())
+  skuId       String
+  onHandQty   Int
+  reservedQty Int      @default(0)
+  safetyStock Int      @default(0)
+  atpQty      Int // computed: onHand - reserved - safety
+  snapshotAt  DateTime @default(now())
+
+  sku Sku @relation(fields: [skuId], references: [id])
+
+  @@index([skuId, snapshotAt])
+}
+
+model WarehouseInstruction {
+  id              String    @id @default(cuid())
+  poId            String    @unique
+  sentAt          DateTime?
+  sentToEmail     String
+  resendMessageId String?
+  emailSubject    String?
+  emailBody       String?   @db.Text
+  acknowledgedAt  DateTime?
+  createdAt       DateTime  @default(now())
+
+  po             PurchaseOrder   @relation(fields: [poId], references: [id])
+  dispatchRecord DispatchRecord?
+}
+
+model DispatchRecord {
+  id                     String    @id @default(cuid())
+  poId                   String    @unique
+  warehouseInstructionId String?   @unique
+  gmailMessageId         String?   @unique
+  awbNumber              String?
+  carrierName            String?
+  dispatchedAt           DateTime?
+  estimatedDeliveryDate  DateTime?
+  rawEmailBody           String?   @db.Text
+  createdAt              DateTime  @default(now())
+
+  po                   PurchaseOrder         @relation(fields: [poId], references: [id])
+  warehouseInstruction WarehouseInstruction? @relation(fields: [warehouseInstructionId], references: [id])
+  lineItems            DispatchLineItem[]
+  deliveryRecord       DeliveryRecord?
+}
+
+model DispatchLineItem {
+  id               String @id @default(cuid())
+  dispatchRecordId String
+  skuId            String
+  dispatchedQty    Int
+
+  dispatchRecord DispatchRecord @relation(fields: [dispatchRecordId], references: [id], onDelete: Cascade)
+  sku            Sku            @relation(fields: [skuId], references: [id])
+
+  @@index([dispatchRecordId])
+}
+
+model DeliveryRecord {
+  id                String    @id @default(cuid())
+  poId              String    @unique
+  dispatchRecordId  String    @unique
+  gmailMessageId    String?   @unique
+  deliveredAt       DateTime?
+  deliveryStatus    String?
+  grnReminderSentAt DateTime?
+  grnDeadline       DateTime? // deliveredAt + 48h
+  createdAt         DateTime  @default(now())
+
+  po             PurchaseOrder  @relation(fields: [poId], references: [id])
+  dispatchRecord DispatchRecord @relation(fields: [dispatchRecordId], references: [id])
+}
+
+model GrnRecord {
+  id                 String    @id @default(cuid())
+  poId               String    @unique
+  source             GrnSource
+  gmailMessageId     String?   @unique
+  channelGrnNumber   String?
+  receivedAt         DateTime  @default(now())
+  status             GrnStatus @default(PENDING_RECONCILIATION)
+  reconciledAt       DateTime?
+  reconciledBy       String?
+  totalAcceptedValue Float?
+  rawData            String?   @db.Text
+  createdAt          DateTime  @default(now())
+
+  po            PurchaseOrder @relation(fields: [poId], references: [id])
+  lineItems     GrnLineItem[]
+  discrepancies Discrepancy[]
+  invoice       Invoice?
+}
+
+enum GrnSource {
+  EMAIL
+  PORTAL
+  MANUAL_CSV
+}
+
+enum GrnStatus {
+  PENDING_RECONCILIATION
+  ACCEPTED
+  DISCREPANCY_FLAGGED
+  RESOLVED
+}
+
+model GrnLineItem {
+  id              String  @id @default(cuid())
+  grnId           String
+  skuId           String
+  receivedQty     Int
+  rejectedQty     Int     @default(0)
+  rejectionReason String?
+
+  grn GrnRecord @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  sku Sku       @relation(fields: [skuId], references: [id])
+
+  @@index([grnId])
+}
+
+model Discrepancy {
+  id              String            @id @default(cuid())
+  poId            String
+  grnId           String
+  skuId           String
+  dispatchedQty   Int
+  receivedQty     Int
+  varianceQty     Int // dispatchedQty - receivedQty
+  variancePct     Float
+  status          DiscrepancyStatus @default(OPEN)
+  resolutionNotes String?
+  resolvedBy      String?
+  resolvedAt      DateTime?
+  createdAt       DateTime          @default(now())
+
+  grnRecord GrnRecord @relation(fields: [grnId], references: [id])
+  sku       Sku       @relation(fields: [skuId], references: [id])
+
+  @@index([grnId])
+  @@index([status])
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  ACCEPTED
+  DEBIT_NOTE_RAISED
+  DISPUTED
+  RESOLVED
+}
+
+model Invoice {
+  id            String    @id @default(cuid())
+  poId          String    @unique
+  grnId         String    @unique
+  invoiceNumber String    @unique
+  invoiceDate   DateTime
+  totalAmount   Float
+  gstAmount     Float
+  s3Key         String?
+  sentAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  po  PurchaseOrder @relation(fields: [poId], references: [id])
+  grn GrnRecord     @relation(fields: [grnId], references: [id])
+}
+
+model IntegrationToken {
+  provider     String   @id // e.g. "blinkit"
+  accessToken  String   @db.Text
+  refreshToken String?  @db.Text
+  data         Json?
+  savedAt      DateTime @default(now()) @updatedAt
+}
+
+model ProcessedEmail {
+  gmailMessageId String   @id
+  emailType      String // po_received | dispatch_confirmation | grn_email | delivery_confirmation
+  processedAt    DateTime @default(now())
+  poId           String?
+  result         Json?
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  entityType  String
+  entityId    String
+  action      String
+  performedBy String?
+  changes     Json?
+  createdAt   DateTime @default(now())
+
+  po PurchaseOrder? @relation(fields: [entityId], references: [id])
+
+  @@index([entityType, entityId])
+}
