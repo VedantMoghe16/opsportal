@@ -11,4 +11,10 @@ export async function register() {
   } catch (e) {
     console.error("[instrumentation] failed to start Blinkit auto-sync", e);
   }
+  try {
+    const { startZeptoAutoSync } = await import("@/lib/services/zepto-scheduler");
+    startZeptoAutoSync();
+  } catch (e) {
+    console.error("[instrumentation] failed to start Zepto auto-sync", e);
+  }
 }
