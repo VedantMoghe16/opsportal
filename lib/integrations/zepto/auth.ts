@@ -15,14 +15,14 @@ export interface ZeptoTokens {
 
 export class ZeptoAuthError extends Error {}
 
-/** Common headers the partner portal sends (ported from zepto-auth.js). */
+/** Common headers the brands portal sends (updated for brands.zepto.co.in / fcc.zepto.co.in). */
 function commonHeaders(): Record<string, string> {
   return {
     accept: "application/json, text/plain, */*",
     "accept-language": "en-US,en;q=0.9,hi;q=0.8",
     "content-type": "application/json",
-    origin: "https://partner.zepto.co.in",
-    referer: "https://partner.zepto.co.in/",
+    origin: "https://brands.zepto.co.in",
+    referer: "https://brands.zepto.co.in/",
     "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"Windows"',
@@ -77,21 +77,32 @@ async function save(tokens: ZeptoTokens): Promise<void> {
   });
 }
 
-/** Return cached tokens unless forcing a refresh; otherwise run the OTP login. */
+/**
+ * Return tokens for Zepto data calls. Priority order:
+ * 1. Cached DB token (unless forceRefresh)
+ * 2. ZEPTO_PORTAL_TOKEN env var (browser-captured HS256 JWT fallback)
+ * 3. OTP login with the brands.zepto.co.in applicationId (d0cd4873)
+ */
 export async function getTokens(forceRefresh = false): Promise<ZeptoTokens> {
   if (!forceRefresh) {
     const cached = await loadCached();
     if (cached?.accessToken) return cached;
   }
+  // Fast-path: use the pre-captured portal token when OTP login isn't available.
+  if (env.ZEPTO_PORTAL_TOKEN) {
+    const tokens: ZeptoTokens = { accessToken: env.ZEPTO_PORTAL_TOKEN, tokenType: "" };
+    if (!forceRefresh) await save(tokens);
+    return tokens;
+  }
   return login();
 }
 
-/** Full MFA login: sign-in → read 4-digit OTP from inbox → validate → persist. */
+/** Full MFA login (brands.zepto.co.in): email+password → OTP → jwtToken → persist. */
 export async function login(): Promise<ZeptoTokens> {
   requireEnv("zepto", ["ZEPTO_LOGIN_EMAIL", "ZEPTO_PASSWORD"]);
   const sentAt = new Date();
 
-  const mfaId = await signIn(env.ZEPTO_LOGIN_EMAIL!, env.ZEPTO_PASSWORD!);
+  const mfaId = await signIn(env.ZEPTO_LOGIN_EMAIL!, env.ZEPTO_PASSWORD ?? "");
 
   // OTP arrives by email (from mailer@zeptonow.com, subject "Email Otp"); read it over IMAP.
   const code = await waitForZeptoOtpImap({ sentAfter: sentAt });
@@ -152,9 +163,9 @@ async function signIn(email: string, password: string): Promise<string> {
   return mfaId;
 }
 
-/** POST /api/v1/auth/validate-mfa-otp/ {otp,mfaId,applicationId} → {jwtToken,…}. */
+/** POST /vendor/api/v1/auth/validate-mfa-otp/ {otp,mfaId,applicationId} → {jwtToken,…}. */
 async function validateOtp(mfaId: string, otp: string): Promise<ZeptoTokens> {
-  const res = await fetch(`${env.ZEPTO_BASE_URL}/api/v1/auth/validate-mfa-otp/`, {
+  const res = await fetch(`${env.ZEPTO_BASE_URL}/vendor/api/v1/auth/validate-mfa-otp/`, {
     method: "POST",
     headers: commonHeaders(),
     body: JSON.stringify({ otp, mfaId, applicationId: env.ZEPTO_APPLICATION_ID }),
