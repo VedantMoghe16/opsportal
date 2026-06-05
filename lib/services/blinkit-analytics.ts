@@ -33,7 +33,7 @@ export interface BlinkitPoRow {
 }
 type PoStatusLite = string;
 
-export interface BlinkitInsights {
+export interface ChannelInsights {
   days: number;
   hasData: boolean;
   lastSyncedAt: Date | null;
@@ -55,18 +55,40 @@ export interface BlinkitInsights {
   pos: BlinkitPoRow[];
 }
 
+/** Back-compat alias — the type was Blinkit-specific before channels were generalized. */
+export type BlinkitInsights = ChannelInsights;
+
 function pick(raw: Record<string, string>, header: string | undefined): string | null {
   if (!header) return null;
   const v = raw[header];
   return v && String(v).trim() ? String(v).trim() : null;
 }
 
-export async function computeBlinkitInsights(days = 7): Promise<BlinkitInsights> {
+/** Per-channel auto-sync cadence, read from the channel's env key (falls back to Blinkit's default). */
+function intervalHoursFor(source: string): number {
+  switch (source) {
+    case "ZEPTO":
+      return env.ZEPTO_SYNC_INTERVAL_HOURS;
+    case "BLINKIT":
+    default:
+      return env.BLINKIT_SYNC_INTERVAL_HOURS;
+  }
+}
+
+export async function computeChannelInsights({
+  source,
+  days = 7,
+}: {
+  source: string;
+  /** Channel slug — accepted for callsite clarity; the source filter is what scopes the query. */
+  slug?: string;
+  days?: number;
+}): Promise<ChannelInsights> {
   const since = new Date(Date.now() - days * DAY);
 
   const pos = await prisma.purchaseOrder.findMany({
     where: {
-      source: "BLINKIT",
+      source,
       OR: [{ poDate: { gte: since } }, { AND: [{ poDate: null }, { createdAt: { gte: since } }] }],
     },
     orderBy: [{ poDate: "desc" }, { createdAt: "desc" }],
@@ -192,7 +214,7 @@ export async function computeBlinkitInsights(days = 7): Promise<BlinkitInsights>
     .sort((a, b) => b.count - a.count);
 
   const latest = await prisma.purchaseOrder.findFirst({
-    where: { source: "BLINKIT" },
+    where: { source },
     orderBy: { updatedAt: "desc" },
     select: { updatedAt: true },
   });
@@ -201,7 +223,7 @@ export async function computeBlinkitInsights(days = 7): Promise<BlinkitInsights>
     days,
     hasData: pos.length > 0,
     lastSyncedAt: latest?.updatedAt ?? null,
-    intervalHours: env.BLINKIT_SYNC_INTERVAL_HOURS,
+    intervalHours: intervalHoursFor(source),
     headers: [...headerSet],
     summary: {
       poCount: pos.length,
@@ -218,4 +240,9 @@ export async function computeBlinkitInsights(days = 7): Promise<BlinkitInsights>
     byStatus,
     pos: rows,
   };
+}
+
+/** Thin back-compat wrapper — scopes insights to the Blinkit source. */
+export async function computeBlinkitInsights(days = 7): Promise<ChannelInsights> {
+  return computeChannelInsights({ source: "BLINKIT", slug: "blinkit", days });
 }

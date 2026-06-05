@@ -6,7 +6,7 @@ import {
   Zap,
   TrendingUp,
   Settings,
-  ShoppingBag,
+  Boxes,
   type LucideIcon,
 } from "lucide-react";
 
@@ -19,7 +19,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Blinkit", href: "/blinkit", icon: ShoppingBag },
+  { label: "Channels", href: "/channels", icon: Boxes },
   { label: "Allocation", href: "/allocate", icon: ClipboardList, badgeKey: "pendingPos" },
   { label: "Orders", href: "/orders", icon: Package },
   { label: "GRN", href: "/grn", icon: CheckCircle2, badgeKey: "openDiscrepancies" },
