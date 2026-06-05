@@ -137,7 +137,7 @@ const schema = z.object({
   // Test PO email (Gmail SMTP, FROM amritya@moxiebeauty.in)
   PO_TEST_EMAIL_SMTP_USER: z.string().default("amritya@moxiebeauty.in"),
   PO_TEST_EMAIL_SMTP_PASS: z.string().optional(), // Gmail app password (strip spaces)
-  PO_TEST_EMAIL_TO: z.string().default("abhisekh@moxiebeauty.in"),
+  PO_TEST_EMAIL_TO: z.string().default("abhishek@moxiebeauty.in"),
 
   // Company
   COMPANY_NAME: z.string().default("Moxie Beauty Pvt Ltd"),

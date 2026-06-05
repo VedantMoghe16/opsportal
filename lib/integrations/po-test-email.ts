@@ -2,36 +2,32 @@ import "server-only";
 import nodemailer from "nodemailer";
 import { env, requireEnv } from "@/lib/env.js";
 
-export interface PoTestEmailResult {
+export interface PoPreparationEmailResult {
   messageId: string;
   to: string;
 }
 
-interface PoTestEmailData {
-  poNumber: string;
+export interface PoEmailLine {
   sku: string;
   qty: number;
-  location: string;
-  channel: string;
-  dispatchFrom: string;
-  senderName: string;
 }
 
-const SAMPLE: PoTestEmailData = {
-  poNumber: "P4466354",
-  sku: "CVSD10",
-  qty: 192,
-  location: "LKO-DRY-MH-SOHRAMAU",
-  channel: "Zepto",
-  dispatchFrom: "RGL NCR",
-  senderName: "Rishabh Kumar",
-};
+export interface PoEmailData {
+  poNumber: string;
+  channel: string;
+  location: string;
+  dispatchFrom: string;
+  lines: PoEmailLine[];
+}
 
-function buildHtml(d: PoTestEmailData): string {
+function buildHtml(d: PoEmailData): string {
   const thBase = "padding:6px 10px;border:1px solid #ccc;";
   const skuTh = `${thBase}background:#F6E199;`;
   const qtyTh = `${thBase}background:#C6E0B4;`;
   const td = "padding:6px 10px;border:1px solid #ccc;";
+  const rows = d.lines
+    .map((l) => `<tr><td style="${td}">${l.sku}</td><td style="${td}">${l.qty}</td></tr>`)
+    .join("\n");
   return `
 <p>Hi Team,</p>
 <p>Please prepare the mention PO:-</p>
@@ -43,10 +39,7 @@ function buildHtml(d: PoTestEmailData): string {
     </tr>
   </thead>
   <tbody>
-    <tr>
-      <td style="${td}">${d.sku}</td>
-      <td style="${td}">${d.qty}</td>
-    </tr>
+    ${rows}
   </tbody>
 </table>
 <ul>
@@ -55,17 +48,18 @@ function buildHtml(d: PoTestEmailData): string {
   <li>Channel: ${d.channel}</li>
   <li>Dispatch From: ${d.dispatchFrom}</li>
 </ul>
-<p>--<br>Regards,<br>${d.senderName}.</p>
+<p>--<br>Regards,<br>Rishabh Kumar.</p>
 `.trim();
 }
 
-function buildText(d: PoTestEmailData): string {
+function buildText(d: PoEmailData): string {
+  const rows = d.lines.map((l) => `${l.sku} | ${l.qty}`).join("\n");
   return `Hi Team,
 
 Please prepare the mention PO:-
 
-SKU    | Qty
-${d.sku} | ${d.qty}
+SKU | Qty
+${rows}
 
 - PO No. - ${d.poNumber}
 - Location/WH: - ${d.location}
@@ -74,11 +68,11 @@ ${d.sku} | ${d.qty}
 
 --
 Regards,
-${d.senderName}.`;
+Rishabh Kumar.`;
 }
 
-export async function sendTestPoEmail(): Promise<PoTestEmailResult> {
-  requireEnv("po-test-email", ["PO_TEST_EMAIL_SMTP_PASS"]);
+export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPreparationEmailResult> {
+  requireEnv("po-preparation-email", ["PO_TEST_EMAIL_SMTP_PASS"]);
 
   const user = env.PO_TEST_EMAIL_SMTP_USER;
   const pass = env.PO_TEST_EMAIL_SMTP_PASS!.replace(/\s+/g, "");
@@ -91,13 +85,12 @@ export async function sendTestPoEmail(): Promise<PoTestEmailResult> {
     auth: { user, pass },
   });
 
-  const d = SAMPLE;
   const info = await transport.sendMail({
     from: `"Moxie Ops" <${user}>`,
     to,
-    subject: `Please prepare the mentioned PO - ${d.poNumber}`,
-    html: buildHtml(d),
-    text: buildText(d),
+    subject: `Please prepare the mentioned PO - ${data.poNumber}`,
+    html: buildHtml(data),
+    text: buildText(data),
   });
 
   return { messageId: info.messageId as string, to };

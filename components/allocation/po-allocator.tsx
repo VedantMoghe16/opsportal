@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Check, Loader2, Wand2, PackageCheck } from "lucide-react";
+import { Check, Loader2, Wand2, PackageCheck, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -59,7 +59,7 @@ export function PoAllocator({
       });
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
-      toast.success(`Allocation saved · ${formatNumber(totalAlloc)} units committed`);
+      toast.success(`Allocation saved · ${formatNumber(totalAlloc)} units · email sent to abhishek@moxiebeauty.in`);
       router.push("/allocate");
       router.refresh();
     } catch (e) {
@@ -135,8 +135,8 @@ export function PoAllocator({
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={() => router.push("/allocate")} disabled={saving}>Cancel</Button>
         <Button onClick={save} disabled={saving}>
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-          Save allocation
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+          Save allocation & send email
         </Button>
       </div>
     </div>
