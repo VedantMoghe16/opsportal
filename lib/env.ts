@@ -73,6 +73,24 @@ const schema = z.object({
   BLINKIT_OTP_APP_PASSWORD: z.string().optional(),
   OTP_IMAP_HOST: z.string().default("imap.gmail.com"),
 
+  // Zepto / partner.zepto.co.in live scraping (mirrors the Blinkit block above)
+  ZEPTO_BASE_URL: z.string().default("https://cx.zepto.co.in"),
+  // Application id the partner portal signs in against (public web constant).
+  ZEPTO_APPLICATION_ID: z.string().default("59b80e60-05bd-45c2-a334-d5ae76c2bb32"),
+  ZEPTO_LOGIN_EMAIL: z.string().optional(), // Zepto portal account; OTP is sent for this user
+  ZEPTO_PASSWORD: z.string().optional(), // Zepto portal password (sign-in body)
+  ZEPTO_START_DATE: z.string().default("2026-06-01"), // backfill floor
+  // PO-listing endpoint discovered from the logged-in portal (path under ZEPTO_BASE_URL).
+  // Left configurable so it can be set once the grid XHR is captured, without a redeploy.
+  ZEPTO_PO_LIST_PATH: z.string().optional(),
+  ZEPTO_PO_DETAIL_PATH: z.string().optional(), // optional per-PO line-items endpoint (use {poId})
+  // Background auto-sync (runs while the app is up)
+  ZEPTO_AUTO_SYNC: z.string().default("true"), // "false" to disable
+  ZEPTO_SYNC_INTERVAL_HOURS: z.coerce.number().positive().default(3),
+  // OTP inbox over IMAP (Gmail app password). Defaults to the Blinkit OTP inbox host.
+  ZEPTO_OTP_EMAIL: z.string().optional(), // defaults to ZEPTO_LOGIN_EMAIL
+  ZEPTO_OTP_APP_PASSWORD: z.string().optional(),
+
   // Company
   COMPANY_NAME: z.string().default("Moxie Beauty Pvt Ltd"),
   COMPANY_GSTIN: z.string().default("29ABCDE1234F1Z5"),
