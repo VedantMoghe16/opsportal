@@ -135,6 +135,26 @@ export class NykaaClient {
   }
 
   /**
+   * Download the PO documents bundle (a ZIP containing the PO PDF/details) from
+   * the seller-portal download endpoint. Authenticated with the same x-access-token
+   * / x-domain headers. Returns the binary + the server-provided filename.
+   */
+  async downloadPoZip(poNumber: string): Promise<{ content: Buffer; filename: string }> {
+    const url =
+      `https://api-seller.nykaa.com/seller-portal/api/v1/download/po-grn-rtv-appointments-pdf` +
+      `?type=po&entityNumber=${encodeURIComponent(poNumber)}`;
+    const res = await this.req(url, { method: "GET", headers: { accept: "application/json, text/plain, */*" } });
+    if (!res.ok) throw new Error(`Nykaa PO-doc download failed: HTTP ${res.status}`);
+    const content = Buffer.from(await res.arrayBuffer());
+    // Nykaa exposes the name in a `filename` response header (it's CORS-exposed).
+    const header = res.headers.get("filename") ?? "";
+    const cd = res.headers.get("content-disposition") ?? "";
+    const cdMatch = cd.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+    const filename = header || (cdMatch ? decodeURIComponent(cdMatch[1]!.replace(/"/g, "")) : `PODetails_${poNumber}.zip`);
+    return { content, filename };
+  }
+
+  /**
    * Fetch all PO records in [since, until] from the configured grid endpoint,
    * paging until exhausted. Returns raw records to be mapped by the ingest.
    *
@@ -154,12 +174,22 @@ export class NykaaClient {
           "are ready; only the endpoint + filter param names are missing.",
       );
     }
-    const pageSize = q.pageSize ?? 100;
+    // Nykaa's /listing is server-fixed at 10/page, newest-first, and does NOT
+    // filter by date — so we page through and window client-side on issue_date
+    // (YYYY-MM-DD, lexicographically comparable to since/until). Newest-first
+    // means once we see a PO older than `since`, every later one is older too,
+    // so we stop early instead of walking all ~540 pages.
+    const pageSize = q.pageSize ?? 10;
     const all: RawNykaaPo[] = [];
     const usesPost = env.NYKAA_PO_LIST_METHOD === "POST" || /__POST__/.test(tpl);
     const basePath = tpl.replace("__POST__", "");
+    const hasWindow = !!(q.since || q.until);
+    const issueDateOf = (r: RawNykaaPo): string | null => {
+      const v = r.issue_date ?? r.issueDate ?? r.po_date ?? r.createDate ?? r.created_at;
+      return typeof v === "string" && v.length >= 10 ? v.slice(0, 10) : null;
+    };
 
-    for (let page = 0; page < 200; page++) {
+    for (let page = 0; page < 500; page++) {
       const filled = basePath
         .replaceAll("{since}", q.since)
         .replaceAll("{until}", q.until)
@@ -184,11 +214,21 @@ export class NykaaClient {
       }
       const json = (await res.json().catch(() => null)) as unknown;
       const records = extractRecords(json);
-      all.push(...records);
-      if (records.length === 0 || records.length < pageSize) {
-        if (!hasNextPage(json, page)) break;
+      if (records.length === 0) break;
+
+      let reachedOlderThanWindow = false;
+      for (const rec of records) {
+        const d = hasWindow ? issueDateOf(rec) : null;
+        if (d) {
+          if (q.since && d < q.since) { reachedOlderThanWindow = true; continue; }
+          if (q.until && d > q.until) continue; // newer than window (rare, newest-first)
+        }
+        all.push(rec);
       }
-      if (!hasNextPage(json, page) && records.length < pageSize) break;
+
+      if (reachedOlderThanWindow) break;     // past the window — all remaining are older
+      if (records.length < pageSize) break;  // last page
+      if (!usesPost && !/\{page\}/.test(basePath)) break; // GET w/o paging param: single shot
     }
     return all;
   }

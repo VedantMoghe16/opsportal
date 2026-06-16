@@ -25,6 +25,14 @@ export interface SkuMasterMaps {
   zeptoToInternal: Record<string, string>;
   instamartToInternal: Record<string, string>;
   nykaaToInternal: Record<string, string>;
+  // Standard-platform reverse maps (from the Beauty Comm "Product Master" sheet).
+  // Each maps every known platform id (listing code AND numeric PID) → internalCode.
+  myntraToInternal: Record<string, string>;
+  purplleToInternal: Record<string, string>;
+  tiraToInternal: Record<string, string>;
+  /** EAN/barcode → internalCode. The universal join — works for any channel whose
+   *  PO line carries an EAN, even when its channel-code column is wrong/missing. */
+  eanToInternal: Record<string, string>;
   /** CHANNEL (uppercase) → internalCode → expected unit taxable value */
   expectedTaxable: Record<string, Record<string, number>>;
   masterSkus: Set<string>;
@@ -37,6 +45,12 @@ export interface MasterRowLike {
   nykaaCode?: string | null;
   instamartCode?: string | null;
   blinkitCode?: string | null;
+  myntraCode?: string | null;
+  purplleCode?: string | null;
+  tiraCode?: string | null;
+  ean?: string | null;
+  nykaaPids?: string | null;
+  purpllePids?: string | null;
   taxableZepto?: number | null;
   taxableNykaa?: number | null;
   taxableInstamart?: number | null;
@@ -52,9 +66,23 @@ function mapsFromFile(): SkuMasterMaps {
     zeptoToInternal: { ...ZEPTO_TO_INTERNAL },
     instamartToInternal: { ...INSTAMART_TO_INTERNAL },
     nykaaToInternal: { ...NYKAA_TO_INTERNAL },
+    // No file defaults for standard platforms — populated from the DB master.
+    myntraToInternal: {},
+    purplleToInternal: {},
+    tiraToInternal: {},
+    eanToInternal: {},
     expectedTaxable: EXPECTED_TAXABLE_VALUE,
     masterSkus: MASTER_SKUS,
   };
+}
+
+/** Split a multi-id cell ("16853282, 16853283") into trimmed non-empty ids. */
+function splitIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return String(raw)
+    .split(/[,;/|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /** Build the runtime maps from SkuMaster rows (pure — used by the server refresh). */
@@ -63,6 +91,10 @@ export function buildMapsFromRows(rows: MasterRowLike[]): SkuMasterMaps {
   const zeptoToInternal: Record<string, string> = {};
   const instamartToInternal: Record<string, string> = {};
   const nykaaToInternal: Record<string, string> = {};
+  const myntraToInternal: Record<string, string> = {};
+  const purplleToInternal: Record<string, string> = {};
+  const tiraToInternal: Record<string, string> = {};
+  const eanToInternal: Record<string, string> = {};
   const ZEPTO: Record<string, number> = {};
   const NYKAA: Record<string, number> = {};
   const INSTAMART: Record<string, number> = {};
@@ -80,6 +112,13 @@ export function buildMapsFromRows(rows: MasterRowLike[]): SkuMasterMaps {
     if (r.zeptoCode) zeptoToInternal[r.zeptoCode] = code;
     if (r.instamartCode) instamartToInternal[r.instamartCode] = code;
     if (r.nykaaCode) nykaaToInternal[r.nykaaCode] = code;
+    // Standard platforms: map both the listing code and every numeric PID.
+    if (r.myntraCode) myntraToInternal[r.myntraCode] = code;
+    if (r.purplleCode) purplleToInternal[r.purplleCode] = code;
+    if (r.tiraCode) tiraToInternal[r.tiraCode] = code;
+    if (r.ean) eanToInternal[String(r.ean).trim()] = code;
+    for (const pid of splitIds(r.nykaaPids)) nykaaToInternal[pid] = code;
+    for (const pid of splitIds(r.purpllePids)) purplleToInternal[pid] = code;
     if (r.taxableZepto != null) ZEPTO[code] = r.taxableZepto;
     if (r.taxableNykaa != null) NYKAA[code] = r.taxableNykaa;
     if (r.taxableInstamart != null) INSTAMART[code] = r.taxableInstamart;
@@ -91,7 +130,11 @@ export function buildMapsFromRows(rows: MasterRowLike[]): SkuMasterMaps {
   const expectedTaxable: Record<string, Record<string, number>> = {
     ZEPTO, NYKAA, INSTAMART, BLINKIT, MYNTRA, RELIANCE, AMAZONNOW,
   };
-  return { blinkitToInternal, zeptoToInternal, instamartToInternal, nykaaToInternal, expectedTaxable, masterSkus };
+  return {
+    blinkitToInternal, zeptoToInternal, instamartToInternal, nykaaToInternal,
+    myntraToInternal, purplleToInternal, tiraToInternal, eanToInternal,
+    expectedTaxable, masterSkus,
+  };
 }
 
 let current: SkuMasterMaps = mapsFromFile();
