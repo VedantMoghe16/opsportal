@@ -17,7 +17,7 @@ const schema = z.object({
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: z.string().optional(),
   CLERK_SECRET_KEY: z.string().optional(),
   // Comma-separated emails allowed to edit admin-gated config (e.g. SKU master)
-  ADMIN_EMAILS: z.string().default("amritya@moxiebeauty.in"),
+  ADMIN_EMAILS: z.string().default("amritya@moxiebeauty.in,vedant@moxiebeauty.in"),
 
   // Google OAuth sign-in (custom flow). When all four are set, Google sign-in
   // takes over from Clerk. The redirect URI must exactly match the Google Console
