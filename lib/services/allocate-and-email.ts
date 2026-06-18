@@ -104,6 +104,8 @@ export async function allocateAndEmailPo(
   opts: AllocateOptions,
   actor: { id: string; label: string } = { id: "system", label: "system" },
   acknowledgeMismatch = false,
+  /** Operator-edited email body (from the review modal); sent verbatim when set. */
+  emailOverrides?: { bodyHtml?: string },
 ): Promise<AllocateResult> {
   const actorLabel = actor.label;
   // Resolve allocations: for full mode, fetch line items first
@@ -299,6 +301,7 @@ export async function allocateAndEmailPo(
           })
           .filter((l) => l.qty > 0),
         attachments,
+        bodyHtmlOverride: emailOverrides?.bodyHtml,
       });
       emailMessageId = result.messageId;
     }

@@ -15,6 +15,9 @@ const schema = z.object({
   // Per-PO SKU removals from the review step: { [poId]: skuId[] } → those lines are
   // allocated 0 and left out of the email (e.g. unmapped/new SKUs we won't sell).
   removals: z.record(z.string(), z.array(z.string())).optional(),
+  // Per-PO operator-edited email body HTML from the review modal: { [poId]: html }.
+  // When present for a PO, that body is sent verbatim instead of the template render.
+  bodies: z.record(z.string(), z.string()).optional(),
 });
 
 export interface BulkAllocateResult {
@@ -34,7 +37,7 @@ export interface BulkAllocateResult {
 export async function POST(req: NextRequest) {
   return handler("POST /api/pos/allocate-bulk", async () => {
     const actor = await currentActor();
-    const { poIds, acknowledge, removals } = schema.parse(await req.json());
+    const { poIds, acknowledge, removals, bodies } = schema.parse(await req.json());
 
     const results: BulkAllocateResult[] = [];
     for (const poId of poIds) {
@@ -44,6 +47,7 @@ export async function POST(req: NextRequest) {
           { full: true, excludeSkuIds: removals?.[poId] ?? [] },
           actor,
           acknowledge ?? false,
+          { bodyHtml: bodies?.[poId] },
         );
         results.push({ poId, ok: true, emailMessageId, mismatchWithheld });
       } catch (err) {

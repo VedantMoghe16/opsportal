@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight, Loader2, SendHorizonal } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, SendHorizonal, RotateCcw, Pencil } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -25,8 +25,9 @@ interface Preview {
 }
 
 /**
- * Review the dispatch email for each selected PO one at a time (Prev/Next), then
- * "Send all" — full-allocates + emails the whole batch via /api/pos/allocate-bulk.
+ * Review the dispatch email for each selected PO one at a time (Prev/Next), edit
+ * the body inline if needed, then "Send all" — full-allocates + emails the whole
+ * batch via /api/pos/allocate-bulk. Edited bodies are sent verbatim per PO.
  */
 export function BulkSendModal({
   pos,
@@ -45,12 +46,22 @@ export function BulkSendModal({
   const [sending, setSending] = useState(false);
   // cache previews by poId so Prev/Next is instant after first view
   const [cache, setCache] = useState<Record<string, Preview>>({});
+  // operator edits keyed by poId — held in a ref so typing never triggers re-render
+  const edits = useRef<Record<string, string>>({});
+  // poIds the operator has edited (drives the "edited" badge / reset button)
+  const [editedIds, setEditedIds] = useState<Set<string>>(new Set());
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const current = pos[idx];
   const total = pos.length;
+  const isEdited = current ? editedIds.has(current.id) : false;
 
   useEffect(() => {
-    if (open) setIdx(0);
+    if (open) {
+      setIdx(0);
+      edits.current = {};
+      setEditedIds(new Set());
+    }
   }, [open]);
 
   useEffect(() => {
@@ -83,14 +94,58 @@ export function BulkSendModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, current?.id]);
 
+  // Fill the editable body imperatively (edited version if present, else original)
+  // so React never re-applies content on re-render and clobbers the cursor.
+  useEffect(() => {
+    if (!preview || !bodyRef.current || !current) return;
+    bodyRef.current.innerHTML = edits.current[current.id] ?? preview.html;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview, current?.id]);
+
+  function captureEdit() {
+    if (!bodyRef.current || !current) return;
+    edits.current[current.id] = bodyRef.current.innerHTML;
+    if (!editedIds.has(current.id)) {
+      setEditedIds((s) => new Set(s).add(current.id));
+    }
+  }
+
+  function resetCurrent() {
+    if (!current) return;
+    const original = cache[current.id]?.html ?? preview?.html ?? "";
+    if (bodyRef.current) bodyRef.current.innerHTML = original;
+    delete edits.current[current.id];
+    setEditedIds((s) => {
+      const n = new Set(s);
+      n.delete(current.id);
+      return n;
+    });
+  }
+
+  function go(nextIdx: number) {
+    captureEdit(); // flush current body before navigating away
+    setIdx(nextIdx);
+  }
+
   async function sendAll() {
+    captureEdit();
+    // Only send a body override where the operator actually changed it.
+    const bodies: Record<string, string> = {};
+    for (const [poId, html] of Object.entries(edits.current)) {
+      if (html && html !== cache[poId]?.html) bodies[poId] = html;
+    }
+
     setSending(true);
     const t = toast.loading(`Sending ${total} PO${total > 1 ? "s" : ""}…`);
     try {
       const res = await fetch("/api/pos/allocate-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ poIds: pos.map((p) => p.id), acknowledge: true }),
+        body: JSON.stringify({
+          poIds: pos.map((p) => p.id),
+          acknowledge: true,
+          ...(Object.keys(bodies).length > 0 ? { bodies } : {}),
+        }),
       });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || "Send failed");
@@ -146,17 +201,39 @@ export function BulkSendModal({
                 </div>
               )}
               <div className="text-[11px] text-muted-foreground">Attachments: the channel PO PDF + Excel are fetched and attached at send time.</div>
-              <div className="rounded-md border border-border/60 p-3 [&_table]:my-2 [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: preview.html }} />
+
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Pencil className="h-3 w-3" /> Click in the email below to edit it — changes apply to this PO only.
+                  {isEdited && <span className="ml-1 rounded-full bg-lime-100 px-2 py-0.5 font-medium text-lime-800">edited</span>}
+                </span>
+                {isEdited && (
+                  <button
+                    type="button"
+                    onClick={resetCurrent}
+                    className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    <RotateCcw className="h-3 w-3" /> Reset
+                  </button>
+                )}
+              </div>
+              <div
+                ref={bodyRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={captureEdit}
+                className="min-h-[160px] rounded-md border border-border/60 p-3 outline-none focus:border-lime-400 focus:ring-2 focus:ring-lime-200 [&_table]:my-2 [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1"
+              />
             </div>
           )}
         </div>
 
         <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>
+            <Button variant="outline" size="sm" disabled={idx === 0} onClick={() => go(Math.max(0, idx - 1))}>
               <ChevronLeft className="h-4 w-4" /> Prev
             </Button>
-            <Button variant="outline" size="sm" disabled={idx >= total - 1} onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}>
+            <Button variant="outline" size="sm" disabled={idx >= total - 1} onClick={() => go(Math.min(total - 1, idx + 1))}>
               Next <ChevronRight className="h-4 w-4" />
             </Button>
           </div>

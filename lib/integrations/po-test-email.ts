@@ -43,6 +43,27 @@ export interface PoEmailData {
   cc?: string[];
   /** Editable copy (greeting/intro/signoff). Defaults to the saved template. */
   template?: EmailTemplate;
+  /**
+   * Operator-edited body HTML from the review modal. When present it's sent as the
+   * email body verbatim (still under the test-mode banner) instead of rendering
+   * from the template + lines. Recipients/subject/attachments are unaffected.
+   */
+  bodyHtmlOverride?: string;
+}
+
+/** Crude HTML→text for the plaintext alternative when a body override is used. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/td>\s*<td[^>]*>/gi, " | ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function buildHtml(d: PoEmailData): string {
@@ -144,8 +165,8 @@ export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPrepa
     from: `"Moxie Ops" <${user}>`,
     to: toStr,
     subject,
-    html: testBanner + buildHtml(data),
-    text: buildText(data),
+    html: testBanner + (data.bodyHtmlOverride ?? buildHtml(data)),
+    text: data.bodyHtmlOverride ? htmlToText(data.bodyHtmlOverride) : buildText(data),
     attachments: data.attachments?.map((a) => ({
       filename: a.filename,
       content: a.content,
