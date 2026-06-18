@@ -51,10 +51,14 @@ function extractRaw(obj: unknown, keys: string[]): string {
   return "—";
 }
 
-// Location/WH for the email — the precise dock/warehouse code, tried in priority
-// order (NOT first-key-wins like extractRaw): Zepto `location`="MUM-DRY-MH3",
-// Nykaa `location`="KOL". Falls back to facility/outlet/city if those are absent.
+// Location/WH for the email — the precise destination warehouse, tried in priority
+// order (NOT first-key-wins like extractRaw). The full descriptive warehouse name
+// (Nykaa `warehouse_location`="NWL-Nykaa Warehouse Lucknow") is preferred over a
+// short code (Nykaa `location`="NWL", Zepto `location`="MUM-DRY-MH3"); falls back
+// to facility/outlet/city. Keys are matched case/punctuation-insensitively.
 export const LOCATION_PRIORITY = [
+  "warehouselocation", "warehousename", "warehousedescription", "warehousedesc",
+  "deliverylocation", "shiptolocation",
   "location", "locationcode", "dcname", "dc", "facilityname", "facility_name",
   "facility", "warehouse", "store", "outlet", "destination", "locationname", "city",
 ];

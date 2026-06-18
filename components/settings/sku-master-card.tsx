@@ -273,7 +273,11 @@ export function SkuMasterCard({ rows, isAdmin }: { rows: SkuMasterRow[]; isAdmin
               </div>
 
               <div>
-                <div className="mb-2 text-xs font-semibold text-muted-foreground">Channel SKU ids & taxable values</div>
+                <div className="mb-1 text-xs font-semibold text-muted-foreground">Channel SKU ids & taxable values</div>
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  A channel can list this SKU under several ids — enter multiple, comma-separated
+                  (e.g. <span className="font-mono">10203887, 10220247</span>). All map to this internal code.
+                </p>
                 <div className="space-y-2">
                   {CODE_CHANNELS.map((c) => (
                     <div key={c.label} className="grid grid-cols-[80px_1fr_140px] items-center gap-2">
@@ -281,7 +285,7 @@ export function SkuMasterCard({ rows, isAdmin }: { rows: SkuMasterRow[]; isAdmin
                       <Input
                         value={(editing[c.key] as string | null) ?? ""}
                         onChange={(e) => setField(c.key, e.target.value)}
-                        placeholder={`${c.label} SKU id`}
+                        placeholder={`${c.label} SKU id(s), comma-separated`}
                         className="h-9"
                       />
                       <Input

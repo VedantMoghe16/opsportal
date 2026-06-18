@@ -406,21 +406,26 @@ function ReviewDialog({
   const rows = poIds
     .map((id) => rowById.get(id))
     .filter((r): r is AllocRow => !!r && (r.hasUnmappedSku || r.hasTaxableMismatch));
+  // Keyed per-PO (`poId::skuId`) so removing a SKU on one PO never touches the same
+  // SKU on another — each handler decides what to drop from each PO independently.
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [reviewed, setReviewed] = useState(false);
 
-  const toggle = (skuId: string) =>
+  const keyOf = (poId: string, skuId: string) => `${poId}::${skuId}`;
+
+  const toggle = (poId: string, skuId: string) =>
     setRemoved((prev) => {
       const next = new Set(prev);
-      if (next.has(skuId)) next.delete(skuId);
-      else next.add(skuId);
+      const k = keyOf(poId, skuId);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
       return next;
     });
 
   function send() {
     const removals: Record<string, string[]> = {};
     for (const r of rows) {
-      const rem = r.unmappedSkus.filter((s) => removed.has(s.skuId)).map((s) => s.skuId);
+      const rem = r.unmappedSkus.filter((s) => removed.has(keyOf(r.id, s.skuId))).map((s) => s.skuId);
       if (rem.length) removals[r.id] = rem;
     }
     onConfirm(removals);
@@ -455,9 +460,9 @@ function ReviewDialog({
                 <span className="text-xs text-muted-foreground">{r.skuCount} SKUs</span>
               </div>
 
-              {/* Unmapped SKUs — accept / remove */}
+              {/* Unmapped SKUs — accept / remove (per-PO) */}
               {r.unmappedSkus.map((s) => {
-                const isRemoved = removed.has(s.skuId);
+                const isRemoved = removed.has(keyOf(r.id, s.skuId));
                 return (
                   <div key={s.skuId} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                     <div className={cn("min-w-0", isRemoved && "opacity-50 line-through")}>
@@ -466,7 +471,7 @@ function ReviewDialog({
                       <Badge variant="danger" className="ml-2 text-[10px]">New SKU</Badge>
                     </div>
                     <button
-                      onClick={() => toggle(s.skuId)}
+                      onClick={() => toggle(r.id, s.skuId)}
                       className={cn(
                         "shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors",
                         isRemoved

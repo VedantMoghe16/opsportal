@@ -108,15 +108,18 @@ export function buildMapsFromRows(rows: MasterRowLike[]): SkuMasterMaps {
     const code = r.internalCode?.trim();
     if (!code) continue;
     masterSkus.add(code);
-    if (r.blinkitCode) blinkitToInternal[r.blinkitCode] = code;
-    if (r.zeptoCode) zeptoToInternal[r.zeptoCode] = code;
-    if (r.instamartCode) instamartToInternal[r.instamartCode] = code;
-    if (r.nykaaCode) nykaaToInternal[r.nykaaCode] = code;
+    // Each channel-code cell may hold MULTIPLE codes (comma/semicolon separated):
+    // one master SKU (e.g. GCS200) can be listed under several ids on a single
+    // channel. Split so every id resolves to the same internal code.
+    for (const c of splitIds(r.blinkitCode)) blinkitToInternal[c] = code;
+    for (const c of splitIds(r.zeptoCode)) zeptoToInternal[c] = code;
+    for (const c of splitIds(r.instamartCode)) instamartToInternal[c] = code;
+    for (const c of splitIds(r.nykaaCode)) nykaaToInternal[c] = code;
     // Standard platforms: map both the listing code and every numeric PID.
-    if (r.myntraCode) myntraToInternal[r.myntraCode] = code;
-    if (r.purplleCode) purplleToInternal[r.purplleCode] = code;
-    if (r.tiraCode) tiraToInternal[r.tiraCode] = code;
-    if (r.ean) eanToInternal[String(r.ean).trim()] = code;
+    for (const c of splitIds(r.myntraCode)) myntraToInternal[c] = code;
+    for (const c of splitIds(r.purplleCode)) purplleToInternal[c] = code;
+    for (const c of splitIds(r.tiraCode)) tiraToInternal[c] = code;
+    for (const e of splitIds(r.ean)) eanToInternal[e] = code;
     for (const pid of splitIds(r.nykaaPids)) nykaaToInternal[pid] = code;
     for (const pid of splitIds(r.purpllePids)) purplleToInternal[pid] = code;
     if (r.taxableZepto != null) ZEPTO[code] = r.taxableZepto;

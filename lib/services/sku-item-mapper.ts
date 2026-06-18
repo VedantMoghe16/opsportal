@@ -239,19 +239,25 @@ export async function resolveUnmappedSkus(skuIds: string[]): Promise<{
   // Covers Blinkit (blinkitCode) and Tira (tiraCode = the SAP productCode on
   // Tira PO lines, e.g. "494619783"). Both are raw numeric-ish ids that won't
   // collide, so a single lookup by either column is safe.
-  const channelIds = toRun.map((s) => s.internalCode); // these are raw item IDs
+  const channelIds = new Set(toRun.map((s) => s.internalCode)); // raw item IDs
+  // blinkitCode/tiraCode cells may hold multiple comma/semicolon-separated codes,
+  // so an exact `{ in }` match would miss them. Fetch all rows with either column
+  // set and match each split id in-memory (the master is small).
+  const splitCodes = (raw: string | null) =>
+    (raw ?? "").split(/[,;/|]+/).map((s) => s.trim()).filter(Boolean);
   const masterMatches = await prisma.skuMaster.findMany({
-    where: { OR: [{ blinkitCode: { in: channelIds } }, { tiraCode: { in: channelIds } }] },
+    where: { OR: [{ blinkitCode: { not: null } }, { tiraCode: { not: null } }] },
     select: { internalCode: true, blinkitCode: true, tiraCode: true, name: true },
   });
   const masterByBlinkitId = new Map<string, (typeof masterMatches)[number]>();
   for (const m of masterMatches) {
-    if (m.blinkitCode) masterByBlinkitId.set(String(m.blinkitCode), m);
-    if (m.tiraCode) masterByBlinkitId.set(String(m.tiraCode), m);
+    for (const c of [...splitCodes(m.blinkitCode), ...splitCodes(m.tiraCode)]) {
+      if (channelIds.has(c)) masterByBlinkitId.set(c, m);
+    }
   }
 
   // Also need to verify the mapped internalCode actually exists in WarehouseStock
-  const masterCodes = masterMatches.map((m) => m.internalCode);
+  const masterCodes = [...new Set([...masterByBlinkitId.values()].map((m) => m.internalCode))];
   const wmsCodesInStock = new Set(
     (
       await prisma.warehouseStock.findMany({
