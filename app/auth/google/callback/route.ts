@@ -1,15 +1,21 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { googleAuthConfigured, exchangeCodeForUser, emailAllowed } from "@/lib/auth/google";
+import {
+  googleAuthConfigured,
+  exchangeCodeForUser,
+  emailAllowed,
+  publicOrigin,
+} from "@/lib/auth/google";
 import { signSession, SESSION_COOKIE, SESSION_MAX_AGE_S } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 /** Google redirects here with ?code&state. Verify, mint a session, land on home. */
 export async function GET(req: Request) {
-  // Redirect relative to the request origin (the public/ngrok host), not
-  // NEXT_PUBLIC_APP_URL, so the session cookie is set on the host the user is on.
-  const home = (path: string) => new URL(path, req.url);
+  // Redirect to the PUBLIC origin (via forwarded headers / NEXT_PUBLIC_APP_URL),
+  // not req.url — behind the proxy req.url is the internal localhost:3003 bind.
+  const origin = publicOrigin(req);
+  const home = (path: string) => new URL(path, origin);
   if (!googleAuthConfigured()) return NextResponse.redirect(home("/"));
 
   const url = new URL(req.url);

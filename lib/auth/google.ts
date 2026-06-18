@@ -5,6 +5,24 @@ const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";
 
+/**
+ * Public-facing origin for building auth redirects. Behind a reverse proxy
+ * (Coolify/Traefik) req.url resolves to the internal bind host (localhost:3003),
+ * so prefer the forwarded headers, then the configured app URL, then req.url.
+ */
+export function publicOrigin(req: Request): string {
+  const h = req.headers;
+  // Traefik/Coolify set x-forwarded-host to the public domain; the raw Host is
+  // the internal bind (localhost:3003), so never fall back to it.
+  const fwdHost = h.get("x-forwarded-host")?.split(",")[0]?.trim();
+  if (fwdHost) {
+    const proto = h.get("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+    return `${proto}://${fwdHost}`;
+  }
+  if (env.NEXT_PUBLIC_APP_URL) return new URL(env.NEXT_PUBLIC_APP_URL).origin;
+  return new URL(req.url).origin;
+}
+
 export interface GoogleUser {
   sub: string;
   email: string;
