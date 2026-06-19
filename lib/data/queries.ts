@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/db";
+import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 import { validatePoTaxables } from "@/lib/services/taxable-validation";
 import { computeFillRates } from "@/lib/services/fill-rate";
 import { grnPortalUrl } from "@/lib/services/portal-links";
@@ -78,6 +79,7 @@ export async function getDashboardData() {
 
 /** POs awaiting allocation + their line items (for the grid). */
 export async function getAllocationData() {
+  await ensureSkuMasterFresh();
   const pos = await prisma.purchaseOrder.findMany({
     where: { status: { in: ["PENDING_REVIEW", "PRIORITISED", "ALLOCATED"] } },
     orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }],
@@ -105,6 +107,7 @@ export async function getAllocationData() {
 
 /** Lightweight list of POs to allocate (open / partially received). */
 export async function getAllocationList() {
+  await ensureSkuMasterFresh();
   const actor = await currentActor();
   const pos = await prisma.purchaseOrder.findMany({
     where: { status: { in: ["PENDING_REVIEW", "PRIORITISED", "ALLOCATED", "GRN_RECEIVED"] } },
@@ -184,6 +187,7 @@ export async function getAllocationList() {
 }
 
 export async function getPoForAllocation(id: string) {
+  await ensureSkuMasterFresh();
   return prisma.purchaseOrder.findUnique({
     where: { id },
     select: {
@@ -245,6 +249,7 @@ export async function getChannels() {
 
 
 export async function getGrns() {
+  await ensureSkuMasterFresh();
   const records = await prisma.grnRecord.findMany({
     orderBy: { receivedAt: "desc" },
     select: {

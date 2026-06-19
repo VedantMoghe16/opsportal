@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/db";
 import { readLiveAtp } from "@/lib/integrations/wms-atp";
 import { resolveInternalSkuAnyChannel } from "@/lib/services/sku-resolver";
+import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 
 const DAY = 86_400_000;
 
@@ -56,6 +57,7 @@ async function todaysDemandByMaster(): Promise<Map<string, number>> {
  * today. Returns an empty list when there are no POs today.
  */
 export async function getLiveAtp(opts: { force?: boolean } = {}): Promise<LiveAtpRow[]> {
+  await ensureSkuMasterFresh();
   const [variants, demand] = await Promise.all([
     readLiveAtp({ force: opts.force }),
     todaysDemandByMaster(),

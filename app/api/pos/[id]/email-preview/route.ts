@@ -6,6 +6,7 @@ import { buildHtml } from "@/lib/integrations/po-test-email";
 import { LOCATION_PRIORITY, pickByPriority } from "@/lib/services/allocate-and-email";
 import { resolveLineInternalSku, eanFromRaw } from "@/lib/services/sku-resolver";
 import { mapEansToInternal } from "@/lib/services/sku-ean-resolver";
+import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 import { resolveDispatchFromForPo } from "@/lib/services/po-documents";
 import {
   getLocationRecipients,
@@ -29,6 +30,7 @@ export const maxDuration = 60;
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   return handler("GET /api/pos/[id]/email-preview", async () => {
     await requireAuth();
+    await ensureSkuMasterFresh();
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: params.id },
       select: {

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, ClipboardCheck, SendHorizonal, Trash2, Undo2, Lock } from "lucide-react";
+import { AlertTriangle, ArrowRight, ClipboardCheck, SendHorizonal, Trash2, Undo2, Lock, Sparkles, Loader2 } from "lucide-react";
 import type { PoStatus } from "@prisma/client";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -403,6 +403,7 @@ function ReviewDialog({
   onConfirm: (removals: Record<string, string[]>) => void;
   onCancel: () => void;
 }) {
+  const router = useRouter();
   const rows = poIds
     .map((id) => rowById.get(id))
     .filter((r): r is AllocRow => !!r && (r.hasUnmappedSku || r.hasTaxableMismatch));
@@ -410,8 +411,47 @@ function ReviewDialog({
   // SKU on another — each handler decides what to drop from each PO independently.
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [reviewed, setReviewed] = useState(false);
+  const [autoMapping, setAutoMapping] = useState(false);
 
   const keyOf = (poId: string, skuId: string) => `${poId}::${skuId}`;
+
+  // Gemini auto-map: match every flagged "new" SKU to an existing internal SKU
+  // and persist it into the master, then refresh so the flags clear.
+  async function autoMap() {
+    const items = rows.flatMap((r) =>
+      r.unmappedSkus
+        .filter((s) => s.channelSkuCode)
+        .map((s) => ({ source: r.channel.name, channelSkuCode: s.channelSkuCode!, name: s.name })),
+    );
+    if (items.length === 0) {
+      toast.info("No new SKU codes to map.");
+      return;
+    }
+    setAutoMapping(true);
+    const t = toast.loading(`Asking AI to map ${items.length} new SKU${items.length !== 1 ? "s" : ""}…`);
+    try {
+      const res = await fetch("/api/sku-mappings/auto-map", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || "Auto-map failed");
+      const applied = json.data.appliedCount as number;
+      const total = (json.data.results as unknown[]).length;
+      if (applied > 0) {
+        toast.success(`Mapped ${applied}/${total} SKU${total !== 1 ? "s" : ""} to the master. Re-checking…`, { id: t });
+        onCancel(); // close; the list re-renders with refreshed mappings
+        router.refresh();
+      } else {
+        toast.warning(`AI couldn't confidently map any of the ${total} SKU${total !== 1 ? "s" : ""}. Map them in Settings → SKUs.`, { id: t });
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Auto-map failed", { id: t });
+    } finally {
+      setAutoMapping(false);
+    }
+  }
 
   const toggle = (poId: string, skuId: string) =>
     setRemoved((prev) => {
@@ -438,12 +478,20 @@ function ReviewDialog({
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-card shadow-2xl">
         <div className="border-b border-border px-5 py-4">
-          <div className="flex items-center gap-2">
-            <ClipboardCheck className="h-5 w-5 text-foreground" />
-            <h2 className="text-base font-semibold">Review before sending · {rows.length} PO{rows.length !== 1 ? "s" : ""} flagged</h2>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="h-5 w-5 text-foreground" />
+              <h2 className="text-base font-semibold">Review before sending · {rows.length} PO{rows.length !== 1 ? "s" : ""} flagged</h2>
+            </div>
+            {unmappedTotal > 0 && (
+              <Button size="sm" variant="outline" className="shrink-0 gap-1.5" onClick={autoMap} disabled={autoMapping}>
+                {autoMapping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                Auto-map with AI
+              </Button>
+            )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            {unmappedTotal > 0 && <>Accept or remove {unmappedTotal} unmapped SKU{unmappedTotal !== 1 ? "s" : ""}. </>}
+            {unmappedTotal > 0 && <>Accept or remove {unmappedTotal} unmapped SKU{unmappedTotal !== 1 ? "s" : ""}, or let AI map them to existing SKUs. </>}
             {priceTotal > 0 && <>{priceTotal} price mismatch{priceTotal !== 1 ? "es" : ""} shown for info. </>}
             Mark as reviewed to enable sending.
           </p>

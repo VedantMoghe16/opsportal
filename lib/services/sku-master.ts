@@ -12,7 +12,29 @@ import { buildMapsFromRows, setSkuMasterMaps } from "@/lib/sku-master-runtime";
 export async function refreshSkuMasterCache(): Promise<number> {
   const rows = await prisma.skuMaster.findMany();
   if (rows.length > 0) setSkuMasterMaps(buildMapsFromRows(rows));
+  lastFreshAt = Date.now();
   return rows.length;
+}
+
+// Next.js bundles server components and route handlers / server actions into
+// SEPARATE module layers, so each gets its OWN copy of the runtime map cache.
+// An edit (route handler) refreshes that layer; the RSC layer that renders the
+// dashboard/orders/allocation tabs keeps a stale (or file-default) copy — which
+// is why some SKUs "won't map" on those tabs after a Settings edit. Calling
+// ensureSkuMasterFresh() at the top of every server data loader pulls the live
+// DB rows into whichever layer is rendering, so resolution is always current.
+let lastFreshAt = 0;
+const FRESH_TTL_MS = 10_000;
+
+/** Refresh the in-layer cache from the DB if it's older than the TTL. Cheap
+ *  (~one indexed findMany of the small master); safe to call per request. */
+export async function ensureSkuMasterFresh(): Promise<void> {
+  if (Date.now() - lastFreshAt < FRESH_TTL_MS) return;
+  try {
+    await refreshSkuMasterCache();
+  } catch (err) {
+    console.warn("[sku-master] ensureSkuMasterFresh failed (using cached maps):", err);
+  }
 }
 
 export async function listSkuMaster(): Promise<SkuMaster[]> {
@@ -91,6 +113,56 @@ export async function upsertSkuMaster(input: SkuMasterInput, updatedBy: string):
 export async function deleteSkuMaster(internalCode: string): Promise<void> {
   await prisma.skuMaster.delete({ where: { internalCode } });
   await refreshSkuMasterCache();
+}
+
+/** Channel name (any case/variant) → the SkuMaster code column it maps to. */
+const CHANNEL_CODE_COLUMN: Record<string, "blinkitCode" | "zeptoCode" | "instamartCode" | "nykaaCode" | "tiraCode" | "myntraCode" | "purplleCode"> = {
+  blinkit: "blinkitCode",
+  zepto: "zeptoCode",
+  instamart: "instamartCode",
+  nykaa: "nykaaCode",
+  tira: "tiraCode",
+  reliance: "tiraCode",
+  myntra: "myntraCode",
+  purplle: "purplleCode",
+};
+
+export function channelCodeColumn(source: string): keyof SkuMaster | null {
+  const s = source.toLowerCase();
+  for (const [k, col] of Object.entries(CHANNEL_CODE_COLUMN)) {
+    if (s.includes(k)) return col;
+  }
+  return null;
+}
+
+/**
+ * Append a channel SKU code to an existing master row's channel-code column
+ * (comma-separated, multi-code). No-op if the code is already present. Refreshes
+ * the cache so resolution picks it up immediately. Returns false when the column
+ * or master row can't be resolved.
+ */
+export async function addChannelCodeToMaster(
+  internalCode: string,
+  source: string,
+  channelCode: string,
+  updatedBy: string,
+): Promise<boolean> {
+  const column = channelCodeColumn(source);
+  if (!column) return false;
+  const row = await prisma.skuMaster.findUnique({ where: { internalCode } });
+  if (!row) return false;
+
+  const existing = String((row as Record<string, unknown>)[column] ?? "");
+  const codes = existing.split(/[,;/|]+/).map((s) => s.trim()).filter(Boolean);
+  if (codes.includes(channelCode.trim())) return true; // already mapped
+  codes.push(channelCode.trim());
+
+  await prisma.skuMaster.update({
+    where: { internalCode },
+    data: { [column]: codes.join(","), updatedBy },
+  });
+  await refreshSkuMasterCache();
+  return true;
 }
 
 // ── xlsx / csv import + export (same column layout as the master workbook) ────

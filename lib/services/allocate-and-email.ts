@@ -7,6 +7,7 @@ import { getPoDocuments, extractGstinsFromDoc, resolveDispatchFromForPo } from "
 import { resolveDispatchFromGstins } from "@/lib/services/po-documents-helpers";
 import { resolveLineInternalSku, eanFromRaw } from "@/lib/services/sku-resolver";
 import { mapEansToInternal } from "@/lib/services/sku-ean-resolver";
+import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 import { getLocationRecipients } from "@/lib/services/app-settings";
 import { validatePoTaxables } from "@/lib/services/taxable-validation";
 import { claimPo, PoClaimedError } from "@/lib/services/po-claim";
@@ -111,6 +112,7 @@ export async function allocateAndEmailPo(
   /** Operator-edited email body (from the review modal); sent verbatim when set. */
   emailOverrides?: { bodyHtml?: string },
 ): Promise<AllocateResult> {
+  await ensureSkuMasterFresh();
   const actorLabel = actor.label;
   // Resolve allocations: for full mode, fetch line items first
   let allocations: { skuId: string; approvedQty: number }[];
