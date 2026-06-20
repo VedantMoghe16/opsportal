@@ -20,7 +20,7 @@ import { ColumnFilter } from "@/components/shared/column-filter";
 import {
   TableToolbar, useTableDensity, densityClass, type FilterChipDef,
 } from "@/components/shared/table-toolbar";
-import { SearchFilter, SelectFilter, useDebounced } from "@/components/shared/table-filters";
+import { SearchFilter, SelectFilter, DateRangeFilter, useDebounced, inDateRange } from "@/components/shared/table-filters";
 import { PO_STATUS_META, PO_STATUS_ORDER } from "@/lib/status";
 import { CHANNELS } from "@/lib/channels";
 import { cn, formatINR, formatNumber, formatDate } from "@/lib/utils";
@@ -51,6 +51,8 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
   const [q, setQ] = useState("");
   const [channelSlug, setChannelSlug] = useState("all");
   const [status, setStatus] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -62,6 +64,8 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
     setQ("");
     setChannelSlug("all");
     setStatus("all");
+    setDateFrom("");
+    setDateTo("");
   }
 
   const channelName = CHANNELS.find((c) => c.slug === channelSlug)?.name;
@@ -72,6 +76,8 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
     chips.push({ key: "search", label: `Search: ${q}`, onRemove: () => setQ("") });
   if (status !== "all")
     chips.push({ key: "status", label: PO_STATUS_META[status as PoStatus]?.label ?? status, onRemove: () => setStatus("all") });
+  if (dateFrom !== "" || dateTo !== "")
+    chips.push({ key: "date", label: `PO date ${dateFrom || "…"}–${dateTo || "…"}`, onRemove: () => { setDateFrom(""); setDateTo(""); } });
 
   const statusOptions = useMemo(() => {
     const present = new Set(rows.map((r) => r.status));
@@ -86,9 +92,10 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
           (r.channelPoNumber ?? "").toLowerCase().includes(s) ||
           (r.facility ?? "").toLowerCase().includes(s)) &&
         (channelSlug === "all" || r.channel.name === channelName) &&
-        (status === "all" || r.status === status),
+        (status === "all" || r.status === status) &&
+        inDateRange(r.poDate, dateFrom, dateTo),
     );
-  }, [rows, debouncedQ, channelSlug, channelName, status]);
+  }, [rows, debouncedQ, channelSlug, channelName, status, dateFrom, dateTo]);
 
   const rowById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
@@ -249,7 +256,15 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
               </ColumnFilter>
             </TableHead>
             <TableHead>Facility</TableHead>
-            <TableHead>PO date</TableHead>
+            <TableHead>
+              <ColumnFilter
+                label="PO date"
+                active={dateFrom !== "" || dateTo !== ""}
+                onClear={() => { setDateFrom(""); setDateTo(""); }}
+              >
+                <DateRangeFilter from={dateFrom} to={dateTo} onFrom={setDateFrom} onTo={setDateTo} />
+              </ColumnFilter>
+            </TableHead>
             <TableHead className="text-right">SKUs</TableHead>
             <TableHead className="text-right">Ordered</TableHead>
             <TableHead className="text-right">Allocated</TableHead>

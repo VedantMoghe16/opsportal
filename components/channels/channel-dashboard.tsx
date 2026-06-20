@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -20,9 +20,13 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
+import { SelectItem } from "@/components/ui/select";
 import { StatCard } from "@/components/dashboard/summary-stats";
 import { EmptyState } from "@/components/shared/empty-state";
 import { BulkSendModal, type BulkPo } from "@/components/channels/bulk-send-modal";
+import { ColumnFilter } from "@/components/shared/column-filter";
+import { SearchFilter, SelectFilter, DateRangeFilter, useDebounced, inDateRange } from "@/components/shared/table-filters";
+import { PO_STATUS_META, PO_STATUS_ORDER } from "@/lib/status";
 import { cn, formatINR, formatNumber, formatDate, relativeTime } from "@/lib/utils";
 import type { ChannelConfig } from "@/lib/channels";
 import type { ChannelInsights } from "@/lib/services/blinkit-analytics";
@@ -476,6 +480,29 @@ function PoTable({ rows }: { rows: ChannelInsights["pos"] }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const debouncedQ = useDebounced(q);
+
+  const statusOptions = useMemo(() => {
+    const present = new Set(rows.map((r) => r.status));
+    return PO_STATUS_ORDER.filter((s) => present.has(s));
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    const s = debouncedQ.trim().toLowerCase();
+    return rows.filter(
+      (r) =>
+        (s === "" ||
+          (r.poNumber ?? "").toLowerCase().includes(s) ||
+          (r.outlet ?? r.city ?? "").toLowerCase().includes(s)) &&
+        (status === "all" || r.status === status) &&
+        inDateRange(r.poDate, dateFrom, dateTo),
+    );
+  }, [rows, debouncedQ, status, dateFrom, dateTo]);
+
   function toggle(id: string) {
     setOpen((prev) => {
       const n = new Set(prev);
@@ -490,8 +517,8 @@ function PoTable({ rows }: { rows: ChannelInsights["pos"] }) {
       return n;
     });
   }
-  // Only un-allocated POs are selectable for bulk allocate & send.
-  const selectable = rows.filter((p) => !ALLOCATED_OR_BEYOND.has(p.status));
+  // Only un-allocated POs are selectable for bulk allocate & send (within the current filter).
+  const selectable = filtered.filter((p) => !ALLOCATED_OR_BEYOND.has(p.status));
   const allSelected = selectable.length > 0 && selectable.every((p) => selected.has(p.id));
   function toggleAll() {
     setSelected(allSelected ? new Set() : new Set(selectable.map((p) => p.id)));
@@ -522,10 +549,30 @@ function PoTable({ rows }: { rows: ChannelInsights["pos"] }) {
             )}
           </TableHead>
           <TableHead className="w-8" />
-          <TableHead>PO Number</TableHead>
-          <TableHead>PO Date</TableHead>
+          <TableHead>
+            <ColumnFilter label="PO Number" active={q !== ""} onClear={() => setQ("")}>
+              <SearchFilter value={q} onChange={setQ} placeholder="PO number or outlet…" className="w-full" />
+            </ColumnFilter>
+          </TableHead>
+          <TableHead>
+            <ColumnFilter
+              label="PO Date"
+              active={dateFrom !== "" || dateTo !== ""}
+              onClear={() => { setDateFrom(""); setDateTo(""); }}
+            >
+              <DateRangeFilter from={dateFrom} to={dateTo} onFrom={setDateFrom} onTo={setDateTo} />
+            </ColumnFilter>
+          </TableHead>
           <TableHead>Outlet</TableHead>
-          <TableHead>Status</TableHead>
+          <TableHead>
+            <ColumnFilter label="Status" active={status !== "all"} onClear={() => setStatus("all")}>
+              <SelectFilter value={status} onChange={setStatus} allLabel="All statuses" width="w-full">
+                {statusOptions.map((s) => (
+                  <SelectItem key={s} value={s}>{PO_STATUS_META[s].label}</SelectItem>
+                ))}
+              </SelectFilter>
+            </ColumnFilter>
+          </TableHead>
           <TableHead className="text-right">Lines</TableHead>
           <TableHead className="text-right">Units</TableHead>
           <TableHead className="text-right">Value</TableHead>
@@ -533,7 +580,7 @@ function PoTable({ rows }: { rows: ChannelInsights["pos"] }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((po) => {
+        {filtered.map((po) => {
           const isOpen = open.has(po.id);
           return (
             <>
