@@ -4,10 +4,12 @@
 #
 # Base = Microsoft Playwright (Ubuntu 22.04 "jammy"). It ships Chromium + all the
 # system libraries the Tira / Nykaa headless scrapers need, and bundles Node 20.
-# Pinned to the same Playwright version as package.json (^1.49.1) so the bundled
-# browser revision matches the npm package.
+# IMPORTANT: keep this tag in sync with the playwright version resolved in
+# package-lock.json. If they drift, `npx playwright install chromium` below throws
+# away the image's bundled browsers and re-downloads ~180MB on every build (slow +
+# network-flaky). Lockfile is currently 1.60.0 → use v1.60.0-jammy.
 
-FROM mcr.microsoft.com/playwright:v1.49.1-jammy AS base
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy AS base
 WORKDIR /app
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NEXT_TELEMETRY_DISABLED=1
