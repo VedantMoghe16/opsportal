@@ -1,5 +1,5 @@
 import { skuMasterMaps } from "@/lib/sku-master-runtime";
-import { isSkuMapped } from "@/lib/services/sku-resolver";
+import { isSkuMapped, pvIdFromRaw } from "@/lib/services/sku-resolver";
 
 export interface TaxableLineResult {
   lineId: string;
@@ -137,7 +137,7 @@ export function validatePoTaxables(po: PoWithLines): TaxableValidationResult {
   //  • Zepto (map keyed by UUIDs we don't store → maps 0%) → never flagged. ✓
   //  • Blinkit (sparse/incomplete map → maps a minority) → not treated as authoritative,
   //    so its many already-known-but-unmapped SKUs don't flood the review. ✓
-  const mappedCount = po.lineItems.filter((li) => isSkuMapped(po.channel.name, li.channelSkuCode)).length;
+  const mappedCount = po.lineItems.filter((li) => isSkuMapped(po.channel.name, li.channelSkuCode, pvIdFromRaw(li.rawData))).length;
   const mapIsAuthoritative = po.lineItems.length > 0 && mappedCount / po.lineItems.length >= 0.8;
 
   const lines: TaxableLineResult[] = po.lineItems.map((li) => {
@@ -147,7 +147,7 @@ export function validatePoTaxables(po: PoWithLines): TaxableValidationResult {
 
     const internalSku = li.sku.internalCode;
     const expected: number | null = channelExpected[internalSku] ?? null;
-    const unmapped = mapIsAuthoritative && !isSkuMapped(po.channel.name, li.channelSkuCode);
+    const unmapped = mapIsAuthoritative && !isSkuMapped(po.channel.name, li.channelSkuCode, pvIdFromRaw(raw));
     const { value: actual, confidence } = extractActual(
       po.channel.name,
       raw,

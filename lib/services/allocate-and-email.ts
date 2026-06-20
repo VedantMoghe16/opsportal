@@ -5,7 +5,7 @@ import { sendPoPreparationEmail } from "@/lib/integrations/po-test-email";
 import type { EmailAttachment } from "@/lib/integrations/po-test-email";
 import { getPoDocuments, extractGstinsFromDoc, resolveDispatchFromForPo } from "@/lib/services/po-documents";
 import { resolveDispatchFromGstins } from "@/lib/services/po-documents-helpers";
-import { resolveLineInternalSku, eanFromRaw } from "@/lib/services/sku-resolver";
+import { resolveLineInternalSku, eanFromRaw, pvIdFromRaw } from "@/lib/services/sku-resolver";
 import { mapEansToInternal } from "@/lib/services/sku-ean-resolver";
 import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 import { getLocationRecipients } from "@/lib/services/app-settings";
@@ -300,6 +300,7 @@ export async function allocateAndEmailPo(
             const sku = resolveLineInternalSku({
               source: po.source,
               channelCode: l.channelSkuCode ?? l.sku.internalCode,
+              pvId: pvIdFromRaw(l.rawData),
               ean: eanFromRaw(l.rawData),
               eanMap,
             });
@@ -342,7 +343,7 @@ export async function allocateAndEmailPo(
         // Shipping warehouse: GSTIN on the PO PDF first, rawData dispatch fields as fallback.
         let warehouse: WarehouseInfo | null = null;
         try {
-          const resolved = await resolveDispatchFromForPo(wmsPo);
+          const resolved = await resolveDispatchFromForPo({ ...wmsPo, id: poId });
           if (resolved.dispatchFrom) warehouse = warehouseByDispatchFrom(resolved.dispatchFrom);
           if (resolved.warnings.length) {
             console.warn("[allocate-and-email] dispatch warehouse:", resolved.warnings);
@@ -366,6 +367,7 @@ export async function allocateAndEmailPo(
               skuCode: resolveLineInternalSku({
                 source: wmsPo.source,
                 channelCode: l.sku.internalCode,
+                pvId: pvIdFromRaw(l.rawData),
                 ean: eanFromRaw(l.rawData),
                 eanMap: wmsEanMap,
               }),

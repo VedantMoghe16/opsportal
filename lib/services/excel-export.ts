@@ -2,7 +2,7 @@ import "server-only";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
-import { resolveInternalSku } from "@/lib/services/sku-resolver";
+import { resolveLineInternalSku, pvIdFromRaw } from "@/lib/services/sku-resolver";
 import { resolveFields } from "@/lib/integrations/blinkit/fields";
 
 /**
@@ -201,7 +201,7 @@ export async function buildOrdersExport(source?: string): Promise<Buffer> {
       const raw = asRecord(li.rawData);
       const fin = lineFinancials(raw, li.unitPrice, li.requestedQty);
       const channelCode = li.channelSkuCode ?? li.sku.internalCode;
-      const internalCode = resolveInternalSku(po.source, channelCode);
+      const internalCode = resolveLineInternalSku({ source: po.source, channelCode, pvId: pvIdFromRaw(raw) });
       const uom = (raw.uom_text as string | undefined) ?? li.sku.uom ?? "";
       aoa.push([
         po.channelPoNumber ?? "",

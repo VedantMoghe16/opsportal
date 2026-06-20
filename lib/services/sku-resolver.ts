@@ -10,6 +10,11 @@ type ChannelSource = string;
  * exists (never blanks the column). Reads the live SKU master cache (DB-backed on
  * the server, file defaults otherwise).
  */
+/** True for any Zepto source label (EMAIL POs use "Zepto", live sync uses "ZEPTO"). */
+function isZeptoSource(source: ChannelSource): boolean {
+  return source.toUpperCase().includes("ZEPTO");
+}
+
 function mapFor(source: ChannelSource): Record<string, string> | null {
   const s = source.toUpperCase();
   const maps = skuMasterMaps();
@@ -27,6 +32,43 @@ export function resolveInternalSku(source: ChannelSource, channelCode: string): 
   const map = mapFor(source);
   if (!map) return channelCode;
   return map[channelCode] ?? channelCode;
+}
+
+/**
+ * Resolve a Zepto line to its Moxie internal code STRICTLY by the Zepto PVID.
+ *
+ * The master's Zepto code column IS the PVID (e.g. "45D4E397-…"). The PVID is the
+ * only authoritative Zepto identifier — the `skuCode` that lands on PO lines is a
+ * transient numeric id (not stored in the master), and Zepto's per-line barcode has
+ * cross-product errors. So Zepto resolves on PVID alone and never falls back to
+ * those. Case-insensitive (line pvId is lowercase, master stores uppercase UUIDs).
+ * Returns null when the PVID isn't in the master (→ caller treats it as unmapped).
+ */
+export function resolveZeptoByPvId(pvId: string | null | undefined): string | null {
+  if (!pvId) return null;
+  const map = skuMasterMaps().zeptoToInternal;
+  const v = String(pvId).trim();
+  if (!v) return null;
+  return map[v] ?? map[v.toUpperCase()] ?? map[v.toLowerCase()] ?? null;
+}
+
+/**
+ * Pull the Zepto PVID out of a PO line's raw data. The live API stores it under
+ * `pvId`; the downloaded CSV uses a "SKU Id" column. `pvId` wins when both exist.
+ * (Matching is case/punctuation-insensitive so "PVID", "SKU Id", "sku_id" all hit.)
+ */
+export function pvIdFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  let skuIdFallback: string | null = null;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const norm = k.toLowerCase().replace(/[^a-z]/g, "");
+    if (norm !== "pvid" && norm !== "skuid") continue;
+    const val = typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "";
+    if (!val) continue;
+    if (norm === "pvid") return val; // pvId is authoritative — return immediately
+    skuIdFallback = val; // "SKU Id" column — use only if no pvId present
+  }
+  return skuIdFallback;
 }
 
 /**
@@ -48,12 +90,21 @@ export function resolveInternalSkuByEan(ean: string | null | undefined): string 
 export function resolveLineInternalSku(input: {
   source: ChannelSource;
   channelCode: string | null | undefined;
+  /** Zepto PVID from the line's raw data (via pvIdFromRaw). Required for correct
+   *  Zepto resolution; ignored for other channels. */
+  pvId?: string | null;
   ean?: string | null;
   /** Authoritative EAN→internal map (from the DB). Consulted before the in-memory
    *  map, which can be empty in the server-component layer. */
   eanMap?: Map<string, string>;
 }): string {
-  const { source, channelCode, ean, eanMap } = input;
+  const { source, channelCode, pvId, ean, eanMap } = input;
+  // Zepto: resolve STRICTLY by PVID. Never fall back to the channel code (a transient
+  // numeric id) or the barcode (cross-product errors) — both have mis-dispatched the
+  // wrong SKU. An unknown PVID stays as the raw code so it surfaces as unmapped.
+  if (isZeptoSource(source)) {
+    return resolveZeptoByPvId(pvId) ?? channelCode ?? "";
+  }
   if (channelCode) {
     const viaCode = resolveInternalSku(source, channelCode);
     if (viaCode !== channelCode) return viaCode; // channel-code map had it
@@ -86,7 +137,15 @@ export function eanFromRaw(raw: unknown): string | null {
  * Channels without a mapping table (or a blank code) return `true` so we never
  * false-flag manually-entered / already-internal codes.
  */
-export function isSkuMapped(source: ChannelSource, channelCode: string | null | undefined): boolean {
+export function isSkuMapped(
+  source: ChannelSource,
+  channelCode: string | null | undefined,
+  pvId?: string | null,
+): boolean {
+  // Zepto maps on the PVID, not the transient channelSkuCode. "mapped" == the PVID
+  // is in the master. A missing PVID counts as unmapped so it gets surfaced rather
+  // than silently dispatched as a raw id.
+  if (isZeptoSource(source)) return resolveZeptoByPvId(pvId) != null;
   if (!channelCode) return true;
   const map = mapFor(source);
   if (!map) return true;

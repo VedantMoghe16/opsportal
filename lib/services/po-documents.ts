@@ -2,7 +2,7 @@ import "server-only";
 import { readFile } from "node:fs/promises";
 import { unzipSync } from "fflate";
 import { getDocumentProxy, extractText } from "unpdf";
-import type { PurchaseOrder } from "@prisma/client";
+import type { Prisma, PurchaseOrder } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { tiraPdfPath } from "@/lib/integrations/tira/doc-cache";
 import { BlinkitClient, BlinkitAuthExpired } from "@/lib/integrations/blinkit/client";
@@ -456,7 +456,7 @@ export interface ResolvedDispatch {
  * under `_resolvedDispatchFrom` so repeat calls in the same request are cheap.
  */
 export async function resolveDispatchFromForPo(
-  po: Pick<PurchaseOrder, "channelPoNumber" | "rawData" | "source">,
+  po: Pick<PurchaseOrder, "channelPoNumber" | "rawData" | "source"> & { id?: string },
 ): Promise<ResolvedDispatch> {
   // In-memory cache hit
   if (
@@ -506,9 +506,21 @@ export async function resolveDispatchFromForPo(
 
   const result = resolveDispatchFromGstins(gstins);
 
-  // Cache in memory (no DB write)
+  // Persist the resolved warehouse onto the PO so future loads skip the PDF
+  // download+parse entirely (the dominant allocate-page latency). The in-memory
+  // mutation covers the current request; the DB write covers every later one.
   if (result.dispatchFrom && po.rawData && typeof po.rawData === "object" && !Array.isArray(po.rawData)) {
     (po.rawData as Record<string, unknown>)["_resolvedDispatchFrom"] = result.dispatchFrom;
+    if (po.id) {
+      try {
+        await prisma.purchaseOrder.update({
+          where: { id: po.id },
+          data: { rawData: po.rawData as Prisma.InputJsonValue },
+        });
+      } catch (err) {
+        console.warn(`[po-documents] failed to persist dispatchFrom for PO ${poId}:`, err);
+      }
+    }
   }
 
   if (result.warning) warnings.push(result.warning);

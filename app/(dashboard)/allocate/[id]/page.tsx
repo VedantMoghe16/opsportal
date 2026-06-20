@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/orders/status-badge";
 import { PoAllocator } from "@/components/allocation/po-allocator";
 import { getPoForAllocation } from "@/lib/data/queries";
 import { validatePoTaxables } from "@/lib/services/taxable-validation";
-import { resolveInternalSku, resolveLineInternalSku, eanFromRaw } from "@/lib/services/sku-resolver";
+import { resolveInternalSku, resolveLineInternalSku, eanFromRaw, pvIdFromRaw } from "@/lib/services/sku-resolver";
 import { mapEansToInternal } from "@/lib/services/sku-ean-resolver";
 import { currentActor } from "@/lib/auth";
 import { isClaimedByOther } from "@/lib/services/po-claim";
@@ -140,6 +140,7 @@ export default async function AllocatePoPage({ params }: { params: { id: string 
               displaySkuCode: resolveLineInternalSku({
                 source: po.channel.name,
                 channelCode: l.channelSkuCode ?? l.sku.internalCode,
+                pvId: pvIdFromRaw(l.rawData),
                 ean: eanFromRaw(l.rawData),
                 eanMap,
               }),

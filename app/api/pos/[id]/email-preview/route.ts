@@ -4,7 +4,7 @@ import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buildHtml } from "@/lib/integrations/po-test-email";
 import { LOCATION_PRIORITY, pickByPriority } from "@/lib/services/allocate-and-email";
-import { resolveLineInternalSku, eanFromRaw } from "@/lib/services/sku-resolver";
+import { resolveLineInternalSku, eanFromRaw, pvIdFromRaw } from "@/lib/services/sku-resolver";
 import { mapEansToInternal } from "@/lib/services/sku-ean-resolver";
 import { ensureSkuMasterFresh } from "@/lib/services/sku-master";
 import { resolveDispatchFromForPo } from "@/lib/services/po-documents";
@@ -60,6 +60,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         sku: resolveLineInternalSku({
           source: po.source,
           channelCode: l.channelSkuCode ?? l.sku.internalCode,
+          pvId: pvIdFromRaw(l.rawData),
           ean: eanFromRaw(l.rawData),
           eanMap,
         }),
@@ -72,7 +73,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
     let dispatchFrom = "—";
     try {
-      const r = await resolveDispatchFromForPo(po);
+      const r = await resolveDispatchFromForPo({ ...po, id: params.id });
       if (r.dispatchFrom) dispatchFrom = r.dispatchFrom;
     } catch { /* preview is best-effort; finalised at send */ }
 
