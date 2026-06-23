@@ -12,19 +12,22 @@ const schema = z.object({
   ),
   // Set true to send the email even when channel prices differ from the rate sheet.
   acknowledge: z.boolean().optional(),
+  // Operator-edited email body HTML from the preview step; sent verbatim when present.
+  bodyHtml: z.string().optional(),
 });
 
 /** Persist per-SKU approved quantities for one PO and email abhishek@ about preparation. */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   return handler("POST /api/pos/[id]/allocate", async () => {
     const actor = await currentActor();
-    const { allocations, acknowledge } = schema.parse(await req.json());
+    const { allocations, acknowledge, bodyHtml } = schema.parse(await req.json());
 
     const result = await allocateAndEmailPo(
       params.id,
       { allocations },
       actor,
       acknowledge ?? false,
+      { bodyHtml },
     );
 
     return ok({ poId: params.id, lines: allocations.length, ...result });

@@ -9,6 +9,20 @@ import { Button } from "@/components/ui/button";
 export interface BulkPo {
   id: string;
   poNumber: string;
+  /**
+   * Pending allocation to preview, BEFORE it's persisted. When present the modal
+   * previews via POST so removed SKUs / custom quantities are reflected:
+   *  • `allocations`   — explicit per-SKU approved qty (single-PO allocator).
+   *  • `excludeSkuIds` — SKUs removed during bulk review.
+   * Omit to preview the PO's stored quantities (GET — channel bulk-send).
+   */
+  previewPayload?: { allocations?: { skuId: string; approvedQty: number }[]; excludeSkuIds?: string[] };
+}
+
+export interface SendSummary {
+  sent: number;
+  withheld: number;
+  failed: number;
 }
 
 interface Preview {
@@ -34,11 +48,21 @@ export function BulkSendModal({
   open,
   onClose,
   onSent,
+  removals,
+  onSend,
 }: {
   pos: BulkPo[];
   open: boolean;
   onClose: () => void;
   onSent: () => void;
+  /** Per-PO SKU removals forwarded to the default allocate-bulk send. */
+  removals?: Record<string, string[]>;
+  /**
+   * Custom send. Receives the operator-edited bodies (only POs actually edited) and
+   * performs the allocate+email, returning a summary. When omitted, the modal calls
+   * POST /api/pos/allocate-bulk (full-allocate + removals + bodies) itself.
+   */
+  onSend?: (bodies: Record<string, string>) => Promise<SendSummary>;
 }) {
   const [idx, setIdx] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -74,7 +98,17 @@ export function BulkSendModal({
     let cancelled = false;
     setLoading(true);
     setPreview(null);
-    fetch(`/api/pos/${current.id}/email-preview`)
+    const url = `/api/pos/${current.id}/email-preview`;
+    // POST (with the pending allocation) when one is supplied, so the preview matches
+    // what will be sent; otherwise GET the stored-quantity preview.
+    const req = current.previewPayload
+      ? fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(current.previewPayload),
+        })
+      : fetch(url);
+    req
       .then((r) => r.json())
       .then((json) => {
         if (cancelled) return;
@@ -138,25 +172,33 @@ export function BulkSendModal({
     setSending(true);
     const t = toast.loading(`Sending ${total} PO${total > 1 ? "s" : ""}…`);
     try {
-      const res = await fetch("/api/pos/allocate-bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          poIds: pos.map((p) => p.id),
-          acknowledge: true,
-          ...(Object.keys(bodies).length > 0 ? { bodies } : {}),
-        }),
-      });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error || "Send failed");
-      const results = json.data.results as { ok: boolean; mismatchWithheld?: boolean }[];
-      const sent = results.filter((r) => r.ok && !r.mismatchWithheld).length;
-      const withheld = results.filter((r) => r.mismatchWithheld).length;
-      const failed = results.filter((r) => !r.ok).length;
+      let summary: SendSummary;
+      if (onSend) {
+        summary = await onSend(bodies);
+      } else {
+        const res = await fetch("/api/pos/allocate-bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            poIds: pos.map((p) => p.id),
+            acknowledge: true,
+            ...(removals && Object.keys(removals).length > 0 ? { removals } : {}),
+            ...(Object.keys(bodies).length > 0 ? { bodies } : {}),
+          }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || "Send failed");
+        const results = json.data.results as { ok: boolean; mismatchWithheld?: boolean }[];
+        summary = {
+          sent: results.filter((r) => r.ok && !r.mismatchWithheld).length,
+          withheld: results.filter((r) => r.mismatchWithheld).length,
+          failed: results.filter((r) => !r.ok).length,
+        };
+      }
       toast.success(
-        `Allocated & sent ${sent}/${total}` +
-          (withheld ? ` · ${withheld} held (price mismatch)` : "") +
-          (failed ? ` · ${failed} failed` : ""),
+        `Allocated & sent ${summary.sent}/${total}` +
+          (summary.withheld ? ` · ${summary.withheld} held (price mismatch)` : "") +
+          (summary.failed ? ` · ${summary.failed} failed` : ""),
         { id: t },
       );
       onSent();

@@ -21,6 +21,7 @@ import {
   TableToolbar, useTableDensity, densityClass, type FilterChipDef,
 } from "@/components/shared/table-toolbar";
 import { SearchFilter, SelectFilter, DateRangeFilter, useDebounced, inDateRange } from "@/components/shared/table-filters";
+import { BulkSendModal } from "@/components/channels/bulk-send-modal";
 import { PO_STATUS_META, PO_STATUS_ORDER } from "@/lib/status";
 import { CHANNELS } from "@/lib/channels";
 import { cn, formatINR, formatNumber, formatDate } from "@/lib/utils";
@@ -54,9 +55,10 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [sending, setSending] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<string[] | null>(null);
+  // The editable email preview step — opened after review (or directly when nothing
+  // is flagged). Carries the per-PO SKU removals decided during review.
+  const [preview, setPreview] = useState<{ poIds: string[]; removals: Record<string, string[]> } | null>(null);
 
   const debouncedQ = useDebounced(q);
 
@@ -134,7 +136,8 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
   function requestBulkSend() {
     const poIds = Array.from(selected);
     if (poIds.length === 0) return;
-    // Open the review step when any selected PO has a price mismatch or an unmapped SKU.
+    // Open the flag-review step when any selected PO has a price mismatch or an
+    // unmapped SKU; otherwise go straight to the editable email preview.
     const flagged = poIds.some((id) => {
       const r = rowById.get(id);
       return r?.hasTaxableMismatch || r?.hasUnmappedSku;
@@ -142,49 +145,14 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
     if (flagged) {
       setPendingConfirm(poIds);
     } else {
-      void executeBulkSend(poIds, {});
+      setPreview({ poIds, removals: {} });
     }
   }
 
-  async function executeBulkSend(poIds: string[], removals: Record<string, string[]>) {
+  // From the review step → open the editable preview carrying the removals.
+  function openPreview(poIds: string[], removals: Record<string, string[]>) {
     setPendingConfirm(null);
-    setSending(true);
-    setProgress({ done: 0, total: poIds.length });
-
-    try {
-      const res = await fetch("/api/pos/allocate-bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // executeBulkSend only runs after the review step is confirmed (or when
-        // nothing is flagged), so it's safe to acknowledge the server price gate.
-        body: JSON.stringify({ poIds, acknowledge: true, removals }),
-      });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error ?? "Bulk allocation failed");
-
-      const results: { poId: string; ok: boolean; mismatchWithheld?: boolean; error?: string }[] = json.data.results;
-      const succeeded = results.filter((r) => r.ok).length;
-      const failed = results.filter((r) => !r.ok).length;
-      const withheld = results.filter((r) => r.mismatchWithheld).length;
-
-      setProgress({ done: poIds.length, total: poIds.length });
-
-      if (failed === 0 && withheld === 0) {
-        toast.success(`Sent ${succeeded} PO${succeeded !== 1 ? "s" : ""}`);
-      } else if (withheld > 0) {
-        toast.warning(`Sent ${succeeded - withheld} · ${withheld} email(s) withheld for price mismatch${failed ? ` · ${failed} failed` : ""}`);
-      } else {
-        toast.warning(`Sent ${succeeded} PO${succeeded !== 1 ? "s" : ""} · ${failed} failed`);
-      }
-
-      setSelected(new Set());
-      router.refresh();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Bulk send failed");
-    } finally {
-      setSending(false);
-      setProgress(null);
-    }
+    setPreview({ poIds, removals });
   }
 
   if (rows.length === 0) {
@@ -209,15 +177,9 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
         noun="POs"
       >
         {selectedCount > 0 && (
-          <Button
-            onClick={requestBulkSend}
-            disabled={sending}
-            className="gap-2 shrink-0"
-          >
+          <Button onClick={requestBulkSend} className="gap-2 shrink-0">
             <SendHorizonal className="h-4 w-4" />
-            {sending && progress
-              ? `Sending ${progress.done + 1}/${progress.total}…`
-              : `Allocate full & send (${selectedCount})`}
+            Allocate full &amp; send ({selectedCount})
           </Button>
         )}
       </TableToolbar>
@@ -365,15 +327,9 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
           <span className="text-sm text-muted-foreground whitespace-nowrap">
             {selectedCount} PO{selectedCount !== 1 ? "s" : ""} selected
           </span>
-          <Button
-            onClick={requestBulkSend}
-            disabled={sending}
-            className="gap-2 rounded-full"
-          >
+          <Button onClick={requestBulkSend} className="gap-2 rounded-full">
             <SendHorizonal className="h-4 w-4" />
-            {sending && progress
-              ? `Sending ${progress.done + 1}/${progress.total}…`
-              : `Allocate full & send (${selectedCount})`}
+            Allocate full &amp; send ({selectedCount})
           </Button>
           <button
             onClick={() => setSelected(new Set())}
@@ -385,13 +341,33 @@ export function AllocationList({ rows }: { rows: AllocRow[] }) {
         </div>
       )}
 
-      {/* Review step: accept/remove unmapped SKUs + price-mismatch info, then send */}
+      {/* Review step: accept/remove unmapped SKUs + price-mismatch info, then preview */}
       {pendingConfirm && (
         <ReviewDialog
           poIds={pendingConfirm}
           rowById={rowById}
-          onConfirm={(removals) => executeBulkSend(pendingConfirm, removals)}
+          onConfirm={(removals) => openPreview(pendingConfirm, removals)}
           onCancel={() => setPendingConfirm(null)}
+        />
+      )}
+
+      {/* Editable email preview — always shown before the email is sent. Removed SKUs
+          (from the review step) are reflected in the preview and excluded on send. */}
+      {preview && (
+        <BulkSendModal
+          open
+          pos={preview.poIds.map((id) => ({
+            id,
+            poNumber: rowById.get(id)?.channelPoNumber ?? id,
+            previewPayload: { excludeSkuIds: preview.removals[id] ?? [] },
+          }))}
+          removals={preview.removals}
+          onClose={() => setPreview(null)}
+          onSent={() => {
+            setPreview(null);
+            setSelected(new Set());
+            router.refresh();
+          }}
         />
       )}
     </div>

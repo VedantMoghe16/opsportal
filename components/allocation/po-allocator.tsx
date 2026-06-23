@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/table";
 import { cn, formatNumber } from "@/lib/utils";
 import { SkuMappingReview } from "@/components/allocation/sku-mapping-review";
+import { BulkSendModal, type SendSummary } from "@/components/channels/bulk-send-modal";
 
 export interface WarehouseStockEntry {
   warehouseCode: string;
@@ -40,6 +41,7 @@ interface Line {
 
 export function PoAllocator({
   poId,
+  poNumber,
   lines,
   receivedBySku,
   warehouseStock = {},
@@ -50,6 +52,7 @@ export function PoAllocator({
   unmappedSkuIds = [],
 }: {
   poId: string;
+  poNumber: string;
   lines: Line[];
   receivedBySku: Record<string, number>;
   warehouseStock?: WarehouseStockBySku;
@@ -92,9 +95,9 @@ export function PoAllocator({
   const [rawInputs, setRawInputs] = useState<Record<string, string>>(() =>
     Object.fromEntries(lines.map((l) => [l.skuId, String(l.approvedQty ?? l.requestedQty ?? 0)])),
   );
-  const [saving, setSaving] = useState(false);
   const [syncingStock, setSyncingStock] = useState(false);
-  const [confirmSend, setConfirmSend] = useState(false);
+  // The editable email preview is the final gate before send — always shown.
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   // Pull fresh WMS stock on demand, then hard-reload so the server re-runs
   // readWarehouseStock with the refreshed mirror (router.refresh alone doesn't
@@ -164,38 +167,29 @@ export function PoAllocator({
     return e ? e.freeQty : 0;
   };
 
-  async function save() {
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/pos/${poId}/allocate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          // Removed lines are sent as 0 → excluded from the prep email.
-          allocations: lines.map((l) => ({
-            skuId: l.skuId,
-            approvedQty: removed.has(l.skuId) ? 0 : alloc[l.skuId] ?? 0,
-          })),
-          // The confirm-send click acknowledges any price mismatch (server gate).
-          acknowledge: confirmSend,
-        }),
-      });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error);
-      if (json.data?.mismatchWithheld) {
-        toast.warning(
-          `Allocation saved · email withheld — ${json.data.mismatches?.length ?? 0} price mismatch(es). Review and confirm to send.`,
-        );
-      } else {
-        toast.success(`Allocation saved · ${formatNumber(totalAlloc)} units · email sent to abhishek@moxiebeauty.in`);
-      }
-      router.push("/allocate");
-      router.refresh();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
+  // Pending per-SKU allocation (removed lines → 0, excluded from preview + email).
+  const buildAllocations = () =>
+    lines.map((l) => ({
+      skuId: l.skuId,
+      approvedQty: removed.has(l.skuId) ? 0 : alloc[l.skuId] ?? 0,
+    }));
+
+  // Final send, from the preview modal — persists the allocation and emails with the
+  // operator-edited body (if any). acknowledge:true because the email was just reviewed.
+  async function sendFromPreview(bodies: Record<string, string>): Promise<SendSummary> {
+    const res = await fetch(`/api/pos/${poId}/allocate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allocations: buildAllocations(),
+        acknowledge: true,
+        bodyHtml: bodies[poId],
+      }),
+    });
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error || "Send failed");
+    const withheld = json.data?.mismatchWithheld ? 1 : 0;
+    return { sent: withheld ? 0 : 1, withheld, failed: 0 };
   }
 
   return (
@@ -394,16 +388,33 @@ export function PoAllocator({
       </div>
 
       <div className="flex justify-end gap-2">
-        <Button variant="outline" onClick={() => router.push("/allocate")} disabled={saving}>Cancel</Button>
+        <Button variant="outline" onClick={() => router.push("/allocate")}>Cancel</Button>
         <Button
-          onClick={() => hasTaxableMismatch && !confirmSend ? setConfirmSend(true) : save()}
-          disabled={saving || totalAlloc === 0 || locked}
-          className={hasTaxableMismatch && !confirmSend ? "gap-2 bg-amber-600 hover:bg-amber-700 text-white border-0" : "gap-2"}
+          onClick={() => setPreviewOpen(true)}
+          disabled={totalAlloc === 0 || locked}
+          className={hasTaxableMismatch ? "gap-2 bg-amber-600 hover:bg-amber-700 text-white border-0" : "gap-2"}
+          title={hasTaxableMismatch ? "Price mismatch flagged — review the email preview before sending" : undefined}
         >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : hasTaxableMismatch && !confirmSend ? <AlertTriangle className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
-          {hasTaxableMismatch && !confirmSend ? "Price mismatch — click again to confirm send" : "Save allocation & send email"}
+          {hasTaxableMismatch ? <AlertTriangle className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
+          {hasTaxableMismatch ? "Review price mismatch & preview email" : "Review & send email"}
         </Button>
       </div>
+
+      {/* Editable email preview — the final gate before the email is sent. Reflects
+          the custom quantities above and excludes any removed lines. Mounted only
+          while open so each open re-previews the current allocation. */}
+      {previewOpen && (
+        <BulkSendModal
+          open
+          pos={[{ id: poId, poNumber, previewPayload: { allocations: buildAllocations() } }]}
+          onClose={() => setPreviewOpen(false)}
+          onSend={sendFromPreview}
+          onSent={() => {
+            router.push("/allocate");
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -127,6 +127,7 @@ export default async function AllocatePoPage({ params }: { params: { id: string 
 
         <PoAllocator
           poId={po.id}
+          poNumber={po.channelPoNumber ?? po.id}
           lines={po.lineItems.map((l) => {
             const f = flagByLine.get(l.id);
             return {
