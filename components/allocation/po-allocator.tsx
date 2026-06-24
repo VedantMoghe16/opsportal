@@ -175,8 +175,14 @@ export function PoAllocator({
     }));
 
   // Final send, from the preview modal — persists the allocation and emails with the
-  // operator-edited body (if any). acknowledge:true because the email was just reviewed.
-  async function sendFromPreview(bodies: Record<string, string>): Promise<SendSummary> {
+  // operator-edited subject/body (if any). acknowledge:true because the email was just reviewed.
+  async function sendFromPreview({
+    bodies,
+    subjects,
+  }: {
+    bodies: Record<string, string>;
+    subjects: Record<string, string>;
+  }): Promise<SendSummary> {
     const res = await fetch(`/api/pos/${poId}/allocate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -184,6 +190,7 @@ export function PoAllocator({
         allocations: buildAllocations(),
         acknowledge: true,
         bodyHtml: bodies[poId],
+        subject: subjects[poId],
       }),
     });
     const json = await res.json();

@@ -40,6 +40,8 @@ export interface BlinkitPoRow {
   lineCount: number;
   units: number;
   value: number | null;
+  /** PO-preparation email reference (e.g. "MB - 26/27 - 1458"), once the email is sent. */
+  emailRef: string | null;
   raw: Record<string, string>;
   items: BlinkitPoItem[];
 }
@@ -219,6 +221,7 @@ export async function computeChannelInsights({
       lineCount: po.lineItems.length,
       units,
       value: po.totalRequestedValue,
+      emailRef: po.emailRef,
       raw,
       items,
     });

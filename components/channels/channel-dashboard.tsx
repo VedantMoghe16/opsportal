@@ -614,6 +614,11 @@ function PoTable({ rows }: { rows: ChannelInsights["pos"] }) {
                   ) : (
                     "—"
                   )}
+                  {po.emailRef && (
+                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground" title="PO-preparation email reference">
+                      {po.emailRef}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-right nums">{po.lineCount}</TableCell>
                 <TableCell className="text-right nums">{formatNumber(po.units)}</TableCell>

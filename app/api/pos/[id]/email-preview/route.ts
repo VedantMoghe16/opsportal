@@ -142,7 +142,10 @@ async function renderPreview(poId: string, overrides: PreviewOverrides) {
     status: po.status,
     location,
     dispatchFrom,
-    subjectPreview: `${series.prefix}${series.nextFormatted}`,
+    // Editable default subject (free text). The reference number is tracked on the PO,
+    // not forced into the subject — refPreview shows the next number that will be issued.
+    defaultSubject: template.subject,
+    refPreview: `${series.prefix}${series.nextFormatted}`,
     to: redirect ? [redirect] : to,
     cc: redirect ? [] : cc,
     testMode: !!redirect,

@@ -115,6 +115,15 @@ export default async function OrderDetailPage({ params }: { params: { id: string
               <div className="text-xs text-muted-foreground">Requested delivery</div>
               <div className="font-medium">{formatDate(po.requestedDeliveryDate)}</div>
             </div>
+            {po.emailRef && (
+              <div>
+                <div className="text-xs text-muted-foreground">Email reference</div>
+                <div className="font-medium font-mono">{po.emailRef}</div>
+                {po.emailSentAt && (
+                  <div className="text-[11px] text-muted-foreground">sent {formatDate(po.emailSentAt)}</div>
+                )}
+              </div>
+            )}
             <div className="ml-auto flex flex-wrap gap-2">
               <ContextActions status={po.status} poId={po.id} hasGrn={isReceived} />
             </div>

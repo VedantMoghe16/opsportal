@@ -102,6 +102,31 @@ export interface AllocateResult {
   mismatchWithheld?: boolean;
   /** The offending lines (when withheld), for the caller to surface. */
   mismatches?: { sku: string; channelSkuCode: string | null; expected: number | null; actual: number | null; reason: string }[];
+  /** True when the allocation saved but the email send threw (after retries) — so the
+   *  caller can show "allocated but not emailed" instead of a silent success. */
+  emailFailed?: boolean;
+  /** The send error message (when emailFailed). */
+  emailError?: string;
+  /** The reference issued for this PO's prep email (stored on the PO). */
+  emailRef?: string | null;
+}
+
+/** Operator-edited email fields from the review/preview step. */
+export interface PoEmailOverrides {
+  bodyHtml?: string;
+  /** Free-text subject; defaults to the saved template subject when omitted. */
+  subject?: string;
+  /** Reuse this reference verbatim instead of issuing a new one (resend). */
+  presetRef?: string;
+}
+
+export interface PoEmailSendResult {
+  emailMessageId: string | null;
+  emailFailed: boolean;
+  emailError?: string;
+  emailRef?: string | null;
+  mismatchWithheld?: boolean;
+  mismatches?: { sku: string; channelSkuCode: string | null; expected: number | null; actual: number | null; reason: string }[];
 }
 
 export async function allocateAndEmailPo(
@@ -109,8 +134,8 @@ export async function allocateAndEmailPo(
   opts: AllocateOptions,
   actor: { id: string; label: string } = { id: "system", label: "system" },
   acknowledgeMismatch = false,
-  /** Operator-edited email body (from the review modal); sent verbatim when set. */
-  emailOverrides?: { bodyHtml?: string },
+  /** Operator-edited email fields (from the review/preview modal). */
+  emailOverrides?: PoEmailOverrides,
 ): Promise<AllocateResult> {
   await ensureSkuMasterFresh();
   const actorLabel = actor.label;
@@ -160,161 +185,13 @@ export async function allocateAndEmailPo(
     });
   });
 
-  // Build and send the PO-preparation email
-  let emailMessageId: string | null = null;
-  try {
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id: poId },
-      select: {
-        channelPoNumber: true,
-        rawData: true,
-        source: true,
-        channel: { select: { name: true } },
-        lineItems: {
-          select: {
-            id: true,
-            skuId: true,
-            approvedQty: true,
-            requestedQty: true,
-            unitPrice: true,
-            channelSkuCode: true,
-            rawData: true,
-            sku: { select: { internalCode: true } },
-          },
-        },
-      },
-    });
-
-    // Price-mismatch gate: validate channel prices vs the SKU-master rate sheet.
-    // Withhold the email (allocation already saved) unless the caller acknowledged.
-    if (po && !acknowledgeMismatch) {
-      const tax = validatePoTaxables(po);
-      if (tax.hasTaxableMismatch) {
-        const mismatches = tax.lines
-          .filter((l) => l.mismatch)
-          .map((l) => ({ sku: l.sku, channelSkuCode: l.channelSkuCode, expected: l.expected, actual: l.actual, reason: l.reason }));
-        await writeAudit({
-          entityType: "PurchaseOrder",
-          entityId: poId,
-          action: "EMAIL_WITHHELD_PRICE_MISMATCH",
-          performedBy: actorLabel,
-          changes: { mismatchCount: mismatches.length, mismatches },
-        });
-        console.warn(`[allocate-and-email] email withheld for PO ${poId}: ${mismatches.length} price mismatch(es)`);
-        return { emailMessageId: null, mismatchWithheld: true, mismatches };
-      }
-    }
-
-    if (po) {
-      const allocMap = Object.fromEntries(allocations.map((a) => [a.skuId, a.approvedQty]));
-      // Authoritative EAN→internal map (DB) so the email shows our WMS codes even
-      // when the channel-code map can't resolve (e.g. Zepto's pvId-based zeptoCode).
-      const eanMap = await mapEansToInternal(po.lineItems.map((l) => eanFromRaw(l.rawData))).catch(() => new Map<string, string>());
-
-      const firstLineRaw = po.lineItems[0]?.rawData;
-      const location =
-        pickByPriority(po.rawData, LOCATION_PRIORITY) !== "—"
-          ? pickByPriority(po.rawData, LOCATION_PRIORITY)
-          : pickByPriority(firstLineRaw, LOCATION_PRIORITY);
-
-      let dispatchFrom =
-        extractRaw(po.rawData, DISPATCH_KEYS) !== "—"
-          ? extractRaw(po.rawData, DISPATCH_KEYS)
-          : extractRaw(firstLineRaw, DISPATCH_KEYS);
-
-      const attachments: EmailAttachment[] = [];
-      try {
-        const docs = await getPoDocuments(po);
-        if (docs.pdf) {
-          attachments.push({
-            filename: docs.pdf.filename,
-            content: docs.pdf.content,
-            contentType: docs.pdf.filename.toLowerCase().endsWith(".zip")
-              ? "application/zip"
-              : "application/pdf",
-          });
-          // Resolve dispatch-from from the supplier (Moxie) GSTIN on the PO doc.
-          // Handles a PDF or a ZIP-of-PDF (Nykaa) — unzips and reads the inner PDF.
-          try {
-            const gstins = await extractGstinsFromDoc(docs.pdf.content, docs.pdf.filename);
-            const resolved = resolveDispatchFromGstins(gstins);
-            if (resolved.dispatchFrom) dispatchFrom = resolved.dispatchFrom;
-            if (resolved.warning) console.warn("[allocate-and-email] dispatchFrom:", resolved.warning);
-          } catch (err) {
-            console.warn("[allocate-and-email] GSTIN extraction failed:", err);
-          }
-        }
-        if (docs.excel) {
-          const isCsv = docs.excel.filename.toLowerCase().endsWith(".csv");
-          attachments.push({
-            filename: docs.excel.filename,
-            content: docs.excel.content,
-            contentType: isCsv
-              ? "text/csv"
-              : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          });
-        }
-        if (docs.warnings.length) {
-          console.warn("[allocate-and-email] document fetch warnings:", docs.warnings);
-        }
-      } catch (err) {
-        console.warn("[allocate-and-email] getPoDocuments failed:", err);
-      }
-
-      // Per-dispatch-location recipients; fall back to the global list (handled
-      // inside sendPoPreparationEmail) when the location is unknown/unmapped.
-      let toOverride: string[] | undefined;
-      let ccOverride: string[] | undefined;
-      if (dispatchFrom && dispatchFrom !== "—") {
-        const locRecipients = await getLocationRecipients(dispatchFrom);
-        if (locRecipients) {
-          toOverride = locRecipients.to;
-          ccOverride = locRecipients.cc;
-          console.info(`[allocate-and-email] using ${dispatchFrom} recipients:`, {
-            to: toOverride,
-            cc: ccOverride,
-          });
-        } else {
-          console.info(`[allocate-and-email] no recipients for "${dispatchFrom}", using global fallback`);
-        }
-      }
-
-      const result = await sendPoPreparationEmail({
-        poNumber: po.channelPoNumber ?? poId,
-        channel: po.channel.name,
-        location,
-        dispatchFrom,
-        to: toOverride,
-        cc: ccOverride,
-        lines: po.lineItems
-          .map((l) => {
-            const qty: number =
-              allocMap[l.skuId] != null
-                ? (allocMap[l.skuId] as number)
-                : (l.approvedQty ?? 0) > 0
-                  ? l.approvedQty!
-                  : l.requestedQty;
-            // Show the warehouse our internal/WMS code, not the raw channel id.
-            // Resolve via channel-code map, then the line's EAN (covers Zepto, whose
-            // channelSkuCode doesn't match the master's pvId-based zeptoCode).
-            const sku = resolveLineInternalSku({
-              source: po.source,
-              channelCode: l.channelSkuCode ?? l.sku.internalCode,
-              pvId: pvIdFromRaw(l.rawData),
-              ean: eanFromRaw(l.rawData),
-              eanMap,
-            });
-            return { sku, qty };
-          })
-          .filter((l) => l.qty > 0),
-        attachments,
-        bodyHtmlOverride: emailOverrides?.bodyHtml,
-      });
-      emailMessageId = result.messageId;
-    }
-  } catch (err) {
-    console.error("[allocate-and-email] email send failed:", err);
+  // Build and send the PO-preparation email (extracted so a resend can reuse it).
+  const emailRes = await buildAndSendPoEmail(poId, { acknowledgeMismatch, emailOverrides, actorLabel });
+  // Price-mismatch withheld → allocation is saved but no email/WMS push.
+  if (emailRes.mismatchWithheld) {
+    return { emailMessageId: null, mismatchWithheld: true, mismatches: emailRes.mismatches };
   }
+  const emailMessageId = emailRes.emailMessageId;
 
   // Subtract the allocation from the local per-warehouse stock mirror (so the
   // next PO immediately sees less free stock) and push a Sales Order to the
@@ -426,5 +303,197 @@ export async function allocateAndEmailPo(
     }
   }
 
-  return { emailMessageId };
+  return {
+    emailMessageId,
+    emailFailed: emailRes.emailFailed,
+    emailError: emailRes.emailError,
+    emailRef: emailRes.emailRef,
+  };
+}
+
+/**
+ * Build and send the PO-preparation email for an ALREADY-PERSISTED allocation.
+ * Reads the PO's current approved quantities, runs the price-mismatch gate (unless
+ * acknowledged), fetches the channel docs, resolves dispatch-from + recipients, and
+ * sends — with bounded retry inside the transport. On success it records the issued
+ * reference (`emailRef`) and `emailSentAt` on the PO so the reference stays visible.
+ *
+ * Used by both the allocate flow (after the persist transaction) and the resend
+ * endpoint (no re-allocation). A send failure is RETURNED (`emailFailed`), never
+ * swallowed, so callers can report "allocated but not emailed".
+ */
+export async function buildAndSendPoEmail(
+  poId: string,
+  opts: {
+    acknowledgeMismatch?: boolean;
+    emailOverrides?: PoEmailOverrides;
+    actorLabel?: string;
+  } = {},
+): Promise<PoEmailSendResult> {
+  const actorLabel = opts.actorLabel ?? "system";
+  const po = await prisma.purchaseOrder.findUnique({
+    where: { id: poId },
+    select: {
+      channelPoNumber: true,
+      rawData: true,
+      source: true,
+      emailRef: true,
+      channel: { select: { name: true } },
+      lineItems: {
+        select: {
+          id: true,
+          skuId: true,
+          approvedQty: true,
+          requestedQty: true,
+          unitPrice: true,
+          channelSkuCode: true,
+          rawData: true,
+          sku: { select: { internalCode: true } },
+        },
+      },
+    },
+  });
+  if (!po) return { emailMessageId: null, emailFailed: true, emailError: "PO not found" };
+
+  // Price-mismatch gate: validate channel prices vs the SKU-master rate sheet.
+  // Withhold the email (allocation already saved) unless the caller acknowledged.
+  if (!opts.acknowledgeMismatch) {
+    const tax = validatePoTaxables(po);
+    if (tax.hasTaxableMismatch) {
+      const mismatches = tax.lines
+        .filter((l) => l.mismatch)
+        .map((l) => ({ sku: l.sku, channelSkuCode: l.channelSkuCode, expected: l.expected, actual: l.actual, reason: l.reason }));
+      await writeAudit({
+        entityType: "PurchaseOrder",
+        entityId: poId,
+        action: "EMAIL_WITHHELD_PRICE_MISMATCH",
+        performedBy: actorLabel,
+        changes: { mismatchCount: mismatches.length, mismatches },
+      });
+      console.warn(`[allocate-and-email] email withheld for PO ${poId}: ${mismatches.length} price mismatch(es)`);
+      return { emailMessageId: null, emailFailed: false, mismatchWithheld: true, mismatches };
+    }
+  }
+
+  try {
+    // Authoritative EAN→internal map (DB) so the email shows our WMS codes even
+    // when the channel-code map can't resolve (e.g. Zepto's pvId-based zeptoCode).
+    const eanMap = await mapEansToInternal(po.lineItems.map((l) => eanFromRaw(l.rawData))).catch(() => new Map<string, string>());
+
+    const firstLineRaw = po.lineItems[0]?.rawData;
+    const location =
+      pickByPriority(po.rawData, LOCATION_PRIORITY) !== "—"
+        ? pickByPriority(po.rawData, LOCATION_PRIORITY)
+        : pickByPriority(firstLineRaw, LOCATION_PRIORITY);
+
+    let dispatchFrom =
+      extractRaw(po.rawData, DISPATCH_KEYS) !== "—"
+        ? extractRaw(po.rawData, DISPATCH_KEYS)
+        : extractRaw(firstLineRaw, DISPATCH_KEYS);
+
+    const attachments: EmailAttachment[] = [];
+    try {
+      const docs = await getPoDocuments(po);
+      if (docs.pdf) {
+        attachments.push({
+          filename: docs.pdf.filename,
+          content: docs.pdf.content,
+          contentType: docs.pdf.filename.toLowerCase().endsWith(".zip")
+            ? "application/zip"
+            : "application/pdf",
+        });
+        // Resolve dispatch-from from the supplier (Moxie) GSTIN on the PO doc.
+        // Handles a PDF or a ZIP-of-PDF (Nykaa) — unzips and reads the inner PDF.
+        try {
+          const gstins = await extractGstinsFromDoc(docs.pdf.content, docs.pdf.filename);
+          const resolved = resolveDispatchFromGstins(gstins);
+          if (resolved.dispatchFrom) dispatchFrom = resolved.dispatchFrom;
+          if (resolved.warning) console.warn("[allocate-and-email] dispatchFrom:", resolved.warning);
+        } catch (err) {
+          console.warn("[allocate-and-email] GSTIN extraction failed:", err);
+        }
+      }
+      if (docs.excel) {
+        const isCsv = docs.excel.filename.toLowerCase().endsWith(".csv");
+        attachments.push({
+          filename: docs.excel.filename,
+          content: docs.excel.content,
+          contentType: isCsv
+            ? "text/csv"
+            : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+      }
+      if (docs.warnings.length) {
+        console.warn("[allocate-and-email] document fetch warnings:", docs.warnings);
+      }
+    } catch (err) {
+      console.warn("[allocate-and-email] getPoDocuments failed:", err);
+    }
+
+    // Per-dispatch-location recipients; fall back to the global list (handled
+    // inside sendPoPreparationEmail) when the location is unknown/unmapped.
+    let toOverride: string[] | undefined;
+    let ccOverride: string[] | undefined;
+    if (dispatchFrom && dispatchFrom !== "—") {
+      const locRecipients = await getLocationRecipients(dispatchFrom);
+      if (locRecipients) {
+        toOverride = locRecipients.to;
+        ccOverride = locRecipients.cc;
+      }
+    }
+
+    const result = await sendPoPreparationEmail({
+      poNumber: po.channelPoNumber ?? poId,
+      channel: po.channel.name,
+      location,
+      dispatchFrom,
+      to: toOverride,
+      cc: ccOverride,
+      lines: po.lineItems
+        .map((l) => {
+          // Quantities are already persisted (approvedQty); fall back to requested.
+          const qty: number = (l.approvedQty ?? 0) > 0 ? l.approvedQty! : l.requestedQty;
+          const sku = resolveLineInternalSku({
+            source: po.source,
+            channelCode: l.channelSkuCode ?? l.sku.internalCode,
+            pvId: pvIdFromRaw(l.rawData),
+            ean: eanFromRaw(l.rawData),
+            eanMap,
+          });
+          return { sku, qty };
+        })
+        .filter((l) => l.qty > 0),
+      attachments,
+      bodyHtmlOverride: opts.emailOverrides?.bodyHtml,
+      subjectOverride: opts.emailOverrides?.subject,
+      // Reuse the explicit ref, else the PO's stored ref (resend), else issue a new one.
+      presetRef: opts.emailOverrides?.presetRef ?? po.emailRef ?? undefined,
+    });
+
+    // Record the reference + sent time on the PO so it stays visible everywhere.
+    await prisma.purchaseOrder.update({
+      where: { id: poId },
+      data: { emailRef: result.ref, emailSentAt: new Date() },
+    }).catch((err) => console.error("[allocate-and-email] failed to persist emailRef:", err));
+    await writeAudit({
+      entityType: "PurchaseOrder",
+      entityId: poId,
+      action: "EMAIL_SENT",
+      performedBy: actorLabel,
+      changes: { ref: result.ref, messageId: result.messageId, to: result.to },
+    }).catch(() => {});
+
+    return { emailMessageId: result.messageId, emailFailed: false, emailRef: result.ref };
+  } catch (err) {
+    const emailError = err instanceof Error ? err.message : String(err);
+    console.error(`[allocate-and-email] email send failed for PO ${poId}:`, err);
+    await writeAudit({
+      entityType: "PurchaseOrder",
+      entityId: poId,
+      action: "EMAIL_FAILED",
+      performedBy: actorLabel,
+      changes: { error: emailError },
+    }).catch(() => {});
+    return { emailMessageId: null, emailFailed: true, emailError };
+  }
 }

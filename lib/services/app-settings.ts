@@ -31,18 +31,22 @@ interface AppSettingsData {
   testEmailMode?: boolean;
   testEmailAddress?: string;
   /** Editable copy for the PO dispatch email (table + bullets stay auto-generated). */
-  emailTemplate?: { greeting?: string; intro?: string; signoff?: string };
+  emailTemplate?: { subject?: string; greeting?: string; intro?: string; signoff?: string };
 }
 
 /** Editable text of the PO dispatch email. The SKU table + PO bullets are always
- *  generated; only these surrounding lines are user-editable. */
+ *  generated; only the subject and these surrounding lines are user-editable. */
 export interface EmailTemplate {
+  /** Default subject line. Free text — the reference number is tracked on the PO,
+   *  not forced into the subject (operators can edit it per send in the preview). */
+  subject: string;
   greeting: string;
   intro: string;
   signoff: string;
 }
 
 export const DEFAULT_EMAIL_TEMPLATE: EmailTemplate = {
+  subject: "PO for Preparation",
   greeting: "Hi Team,",
   intro: "Please prepare the mention PO:-",
   signoff: "Regards,\nTeam Moxie",
@@ -168,6 +172,7 @@ export async function getEmailTemplate(): Promise<EmailTemplate> {
 export async function setEmailTemplate(t: EmailTemplate): Promise<void> {
   await setAppSettings({
     emailTemplate: {
+      subject: t.subject.trim() || DEFAULT_EMAIL_TEMPLATE.subject,
       greeting: t.greeting.trim(),
       intro: t.intro.trim(),
       signoff: t.signoff.trimEnd(),

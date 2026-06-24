@@ -35,6 +35,7 @@ export interface PoRow {
   requestedDeliveryDate: Date | string | null;
   poDate: Date | string | null;
   createdAt: Date | string;
+  emailRef?: string | null;
   channel: { id: string; name: string; logoColor: string | null; tier: string };
   _count: { lineItems: number };
 }
@@ -193,6 +194,11 @@ export function PoTable({
                 </TableCell>
                 <TableCell>
                   <StatusBadge status={po.status} />
+                  {po.emailRef && (
+                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground" title="PO-preparation email reference">
+                      {po.emailRef}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-right">
                   <Link

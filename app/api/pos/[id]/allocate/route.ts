@@ -14,20 +14,22 @@ const schema = z.object({
   acknowledge: z.boolean().optional(),
   // Operator-edited email body HTML from the preview step; sent verbatim when present.
   bodyHtml: z.string().optional(),
+  // Operator-edited free-text subject from the preview step.
+  subject: z.string().optional(),
 });
 
 /** Persist per-SKU approved quantities for one PO and email abhishek@ about preparation. */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   return handler("POST /api/pos/[id]/allocate", async () => {
     const actor = await currentActor();
-    const { allocations, acknowledge, bodyHtml } = schema.parse(await req.json());
+    const { allocations, acknowledge, bodyHtml, subject } = schema.parse(await req.json());
 
     const result = await allocateAndEmailPo(
       params.id,
       { allocations },
       actor,
       acknowledge ?? false,
-      { bodyHtml },
+      { bodyHtml, subject },
     );
 
     return ok({ poId: params.id, lines: allocations.length, ...result });

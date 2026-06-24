@@ -18,6 +18,8 @@ const schema = z.object({
   // Per-PO operator-edited email body HTML from the review modal: { [poId]: html }.
   // When present for a PO, that body is sent verbatim instead of the template render.
   bodies: z.record(z.string(), z.string()).optional(),
+  // Per-PO operator-edited free-text subject: { [poId]: subject }.
+  subjects: z.record(z.string(), z.string()).optional(),
 });
 
 export interface BulkAllocateResult {
@@ -26,6 +28,9 @@ export interface BulkAllocateResult {
   emailMessageId?: string | null;
   /** Allocation saved but email held back due to an unacknowledged price mismatch. */
   mismatchWithheld?: boolean;
+  /** Allocation saved but the email send failed (after retries). */
+  emailFailed?: boolean;
+  emailRef?: string | null;
   error?: string;
 }
 
@@ -37,19 +42,19 @@ export interface BulkAllocateResult {
 export async function POST(req: NextRequest) {
   return handler("POST /api/pos/allocate-bulk", async () => {
     const actor = await currentActor();
-    const { poIds, acknowledge, removals, bodies } = schema.parse(await req.json());
+    const { poIds, acknowledge, removals, bodies, subjects } = schema.parse(await req.json());
 
     const results: BulkAllocateResult[] = [];
     for (const poId of poIds) {
       try {
-        const { emailMessageId, mismatchWithheld } = await allocateAndEmailPo(
+        const { emailMessageId, mismatchWithheld, emailFailed, emailRef } = await allocateAndEmailPo(
           poId,
           { full: true, excludeSkuIds: removals?.[poId] ?? [] },
           actor,
           acknowledge ?? false,
-          { bodyHtml: bodies?.[poId] },
+          { bodyHtml: bodies?.[poId], subject: subjects?.[poId] },
         );
-        results.push({ poId, ok: true, emailMessageId, mismatchWithheld });
+        results.push({ poId, ok: true, emailMessageId, mismatchWithheld, emailFailed, emailRef });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         console.error(`[allocate-bulk] PO ${poId} failed:`, err);

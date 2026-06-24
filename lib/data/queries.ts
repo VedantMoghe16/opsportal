@@ -234,6 +234,7 @@ export async function getOrders() {
       requestedDeliveryDate: true,
       poDate: true,
       createdAt: true,
+      emailRef: true,
       channel: { select: { id: true, name: true, logoColor: true, tier: true } },
       _count: { select: { lineItems: true } },
     },

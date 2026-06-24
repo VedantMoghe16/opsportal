@@ -141,6 +141,11 @@ model PurchaseOrder {
   opsNotes              String?
   approvedBy            String?
   approvedAt            DateTime?
+  // PO-preparation email reference (e.g. "MB - 26/27 - 1458") issued from the Counter
+  // series at send time, plus when it was sent. Stored so the reference stays visible
+  // against the PO across all allocated views. Null until the prep email is sent.
+  emailRef              String?
+  emailSentAt           DateTime?
   // Multi-user allocation lock: who is currently working this PO. Acquired when a
   // user opens it to allocate; released on send / cancel / TTL expiry. The atomic
   // claim check at allocation time is what prevents two people double-allocating.

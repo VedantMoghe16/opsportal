@@ -1,7 +1,8 @@
 import "server-only";
 import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
 import { env, requireEnv } from "@/lib/env";
-import { nextEmailRef, getSeries } from "@/lib/services/email-ref-counter";
+import { nextEmailRef } from "@/lib/services/email-ref-counter";
 import { getPoEmailRecipients, getEmailRedirect, getEmailTemplate, DEFAULT_EMAIL_TEMPLATE, type EmailTemplate } from "@/lib/services/app-settings";
 
 /** Escape HTML and turn newlines into <br> for safe insertion into the email body. */
@@ -15,6 +16,8 @@ export interface PoPreparationEmailResult {
   messageId: string;
   to: string;
   cc?: string;
+  /** The reference issued (or reused) for this email, e.g. "MB - 26/27 - 1458". */
+  ref: string;
 }
 
 export interface PoEmailLine {
@@ -35,8 +38,12 @@ export interface PoEmailData {
   dispatchFrom: string;
   lines: PoEmailLine[];
   attachments?: EmailAttachment[];
-  /** If provided, overrides the default subject with `${PO_EMAIL_REF_PREFIX}${refNumber}`. */
-  refNumber?: number;
+  /** Operator-edited subject (free text). Defaults to the saved template subject.
+   *  The reference number is tracked on the PO, not forced into the subject. */
+  subjectOverride?: string;
+  /** Reuse this exact reference verbatim instead of issuing a new one from the
+   *  series (used when resending an email that already has a reference). */
+  presetRef?: string;
   /** Override To recipients (skips settings lookup when provided). */
   to?: string[];
   /** Override CC recipients (skips settings lookup when provided). */
@@ -118,13 +125,60 @@ ${rows}
 ${t.signoff}`;
 }
 
+/**
+ * One pooled Gmail SMTP connection reused across all sends, instead of opening a
+ * fresh TCP/TLS connection per email (which under a bulk run made Gmail drop
+ * sends). `pool` reuses connections; `rateLimit` paces sends so we never burst
+ * Gmail. Created lazily on first send and kept for the process lifetime.
+ */
+let _transport: Transporter | null = null;
+function getTransport(): Transporter {
+  if (_transport) return _transport;
+  const user = env.PO_TEST_EMAIL_SMTP_USER;
+  const pass = env.PO_TEST_EMAIL_SMTP_PASS!.replace(/\s+/g, "");
+  _transport = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+    pool: true,
+    maxConnections: 2,
+    maxMessages: 50,
+    // ≤ 4 messages per second across the pool — gentle on Gmail's rate limits.
+    rateDelta: 1000,
+    rateLimit: 4,
+  });
+  return _transport;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Send with bounded retry — Gmail occasionally drops a connection mid-batch; one
+ *  transient failure shouldn't silently lose the email. */
+async function sendWithRetry(
+  transport: Transporter,
+  mailOptions: Parameters<Transporter["sendMail"]>[0],
+  attempts = 3,
+): Promise<Awaited<ReturnType<Transporter["sendMail"]>>> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await transport.sendMail(mailOptions);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[po-email] send attempt ${i + 1}/${attempts} failed:`, err instanceof Error ? err.message : err);
+      if (i < attempts - 1) await sleep(700 * 2 ** i); // 0.7s, 1.4s
+    }
+  }
+  throw lastErr;
+}
+
 export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPreparationEmailResult> {
   requireEnv("po-preparation-email", ["PO_TEST_EMAIL_SMTP_PASS"]);
 
   const user = env.PO_TEST_EMAIL_SMTP_USER;
-  const pass = env.PO_TEST_EMAIL_SMTP_PASS!.replace(/\s+/g, "");
 
-  // Editable copy (greeting/intro/signoff) — caller override else the saved template.
+  // Editable copy (subject/greeting/intro/signoff) — caller override else the saved template.
   if (!data.template) data = { ...data, template: await getEmailTemplate() };
 
   // Resolve recipients: use caller-supplied overrides, otherwise read from settings
@@ -134,12 +188,13 @@ export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPrepa
   let toStr = toList.join(", ");
   let ccStr = ccList.join(", ");
 
-  // Assign the next reference (atomic, distinct per concurrent send). The prefix is
-  // the editable series prefix from the Counter, not the env default.
-  let subject =
-    data.refNumber != null
-      ? `${(await getSeries()).prefix}${data.refNumber}`
-      : (await nextEmailRef()).ref;
+  // Reference number: reuse the preset one (resend) or atomically issue the next from
+  // the series (distinct per concurrent send). Tracked on the PO by the caller — NOT
+  // forced into the subject.
+  const ref = data.presetRef ?? (await nextEmailRef()).ref;
+
+  // Subject is free editable text: operator override → saved template subject.
+  let subject = data.subjectOverride?.trim() || data.template?.subject || DEFAULT_EMAIL_TEMPLATE.subject;
 
   // Test-mode sink: redirect everything to the test address; drop cc so nobody
   // else is mailed. Keep the intended recipients visible in the subject/body.
@@ -147,20 +202,14 @@ export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPrepa
   let testBanner = "";
   if (redirect) {
     const intended = `To: ${toStr || "(none)"}${ccStr ? ` · Cc: ${ccStr}` : ""}`;
-    console.log(`[po-email] TEST MODE → redirecting "${subject}" (${intended}) to ${redirect}`);
+    console.log(`[po-email] TEST MODE → redirecting "${subject}" [${ref}] (${intended}) to ${redirect}`);
     testBanner = `<div style="background:#fff7d6;border:1px solid #e6cf6a;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-family:Arial,sans-serif;font-size:13px;color:#665200">🧪 <b>Test mode</b> — this email would normally go to → ${intended}</div>`;
     subject = `[TEST] ${subject}`;
     toStr = redirect;
     ccStr = "";
   }
 
-  const transport = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-  });
-
+  const transport = getTransport();
   const mailOptions: Parameters<typeof transport.sendMail>[0] = {
     from: `"Moxie Ops" <${user}>`,
     to: toStr,
@@ -175,7 +224,7 @@ export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPrepa
   };
   if (ccStr) mailOptions.cc = ccStr;
 
-  const info = await transport.sendMail(mailOptions);
+  const info = await sendWithRetry(transport, mailOptions);
 
-  return { messageId: info.messageId as string, to: toStr, cc: ccStr || undefined };
+  return { messageId: info.messageId as string, to: toStr, cc: ccStr || undefined, ref };
 }
