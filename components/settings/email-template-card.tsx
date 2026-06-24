@@ -10,34 +10,32 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export interface EmailTemplate {
-  subject: string;
   greeting: string;
   intro: string;
   signoff: string;
 }
 
 /**
- * Edit the copy of the PO dispatch email (subject / greeting / intro / signature).
- * The SKU table and PO bullets are always auto-generated from the PO, so only these
+ * Edit the copy of the PO dispatch email (greeting / intro / signature). The SKU
+ * table and PO bullets are always auto-generated from the PO, so only these
  * surrounding lines are editable. Live preview shows exactly what gets sent. The
- * subject is a default — it stays editable per PO in the send preview.
+ * subject defaults to the PO's reference number and is editable per PO in the send
+ * preview, so it isn't set here.
  */
 export function EmailTemplateCard({ initial }: { initial: EmailTemplate }) {
   const router = useRouter();
-  const [subject, setSubject] = useState(initial.subject);
   const [greeting, setGreeting] = useState(initial.greeting);
   const [intro, setIntro] = useState(initial.intro);
   const [signoff, setSignoff] = useState(initial.signoff);
   const [saving, setSaving] = useState(false);
 
   const dirty =
-    subject !== initial.subject ||
     greeting !== initial.greeting || intro !== initial.intro || signoff !== initial.signoff;
-  const valid = subject.trim() && greeting.trim() && intro.trim() && signoff.trim();
+  const valid = greeting.trim() && intro.trim() && signoff.trim();
 
   async function save() {
     if (!valid) {
-      toast.error("Subject, greeting, intro and signature are all required");
+      toast.error("Greeting, intro and signature are all required");
       return;
     }
     setSaving(true);
@@ -45,7 +43,7 @@ export function EmailTemplateCard({ initial }: { initial: EmailTemplate }) {
       const res = await fetch("/api/settings/email-template", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, greeting, intro, signoff }),
+        body: JSON.stringify({ greeting, intro, signoff }),
       });
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
@@ -67,17 +65,12 @@ export function EmailTemplateCard({ initial }: { initial: EmailTemplate }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          The subject, greeting, intro line and signature below are editable. The SKU/Qty table and
-          the PO details (PO No., Location/WH, Channel, Dispatch From) are filled in automatically for
-          each PO. This subject is the default — it stays editable per PO in the send preview. The
-          allocation reference number is recorded against each PO and shown on its order, not in the
-          subject (unless you add it yourself).
+          The greeting, intro line and signature below are editable. The SKU/Qty table and the
+          PO details (PO No., Location/WH, Channel, Dispatch From) are filled in automatically for
+          each PO. The subject defaults to the PO&apos;s allocation reference number and stays editable
+          per PO in the send preview.
         </p>
 
-        <div className="space-y-1.5">
-          <Label htmlFor="et-subject">Subject (default)</Label>
-          <Input id="et-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="PO for Preparation" />
-        </div>
         <div className="space-y-1.5">
           <Label htmlFor="et-greeting">Greeting</Label>
           <Input id="et-greeting" value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hi Team," />
@@ -101,7 +94,7 @@ export function EmailTemplateCard({ initial }: { initial: EmailTemplate }) {
         {/* Live preview — mirrors the real email layout */}
         <div className="rounded-xl border border-border/70 bg-muted/30 p-4 text-sm">
           <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
-          <p className="mb-2 text-xs text-muted-foreground"><span className="font-medium">Subject:</span> {subject || "—"}</p>
+          <p className="mb-2 text-xs text-muted-foreground"><span className="font-medium">Subject:</span> the PO reference number (e.g. MB - 26/27 - 1458)</p>
           <p className="mb-2">{greeting}</p>
           <p className="mb-2">{intro}</p>
           <table className="mb-2 border-collapse text-xs">

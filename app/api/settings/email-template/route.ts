@@ -15,15 +15,14 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   return handler("PUT /api/settings/email-template", async () => {
     await requireAuth();
-    const b = (await req.json()) as { subject?: unknown; greeting?: unknown; intro?: unknown; signoff?: unknown };
-    const subject = typeof b.subject === "string" ? b.subject : "";
+    const b = (await req.json()) as { greeting?: unknown; intro?: unknown; signoff?: unknown };
     const greeting = typeof b.greeting === "string" ? b.greeting : "";
     const intro = typeof b.intro === "string" ? b.intro : "";
     const signoff = typeof b.signoff === "string" ? b.signoff : "";
-    if (!subject.trim() || !greeting.trim() || !intro.trim() || !signoff.trim()) {
-      return fail(new Error("Subject, greeting, intro and signoff are all required"), 400);
+    if (!greeting.trim() || !intro.trim() || !signoff.trim()) {
+      return fail(new Error("Greeting, intro and signoff are all required"), 400);
     }
-    await setEmailTemplate({ subject, greeting, intro, signoff });
-    return ok({ subject: subject.trim(), greeting: greeting.trim(), intro: intro.trim(), signoff: signoff.trimEnd() });
+    await setEmailTemplate({ greeting, intro, signoff });
+    return ok({ greeting: greeting.trim(), intro: intro.trim(), signoff: signoff.trimEnd() });
   });
 }

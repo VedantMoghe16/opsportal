@@ -44,7 +44,6 @@ interface Preview {
   channel: string;
   location: string;
   dispatchFrom: string;
-  defaultSubject: string;
   refPreview: string;
   to: string[];
   cc: string[];
@@ -153,8 +152,8 @@ export function BulkSendModal({
         if (!json.success) throw new Error(json.error || "Preview failed");
         setCache((c) => ({ ...c, [current.id]: json.data }));
         setPreview(json.data);
-        // Seed the editable subject from the template default the first time.
-        setSubjects((s) => (s[current.id] !== undefined ? s : { ...s, [current.id]: json.data.defaultSubject ?? "" }));
+        // Seed the editable subject from the PO's reference number the first time.
+        setSubjects((s) => (s[current.id] !== undefined ? s : { ...s, [current.id]: json.data.refPreview ?? "" }));
       })
       .catch((e) => {
         if (!cancelled) toast.error(e instanceof Error ? e.message : "Preview failed");
@@ -194,7 +193,7 @@ export function BulkSendModal({
       n.delete(current.id);
       return n;
     });
-    if (preview) setSubjects((s) => ({ ...s, [current.id]: preview.defaultSubject }));
+    if (preview) setSubjects((s) => ({ ...s, [current.id]: preview.refPreview }));
   }
 
   function go(nextIdx: number) {
@@ -209,9 +208,14 @@ export function BulkSendModal({
     for (const [poId, html] of Object.entries(edits.current)) {
       if (html && html !== cache[poId]?.html) bodies[poId] = html;
     }
+    // Only send a subject override when the operator actually changed it from the
+    // default (the PO's reference). Otherwise omit it so the server stamps each PO's
+    // OWN issued reference (distinct per PO in a bulk run) rather than the projected one.
     const subjectsOut: Record<string, string> = {};
     for (const [poId, subj] of Object.entries(subjects)) {
-      if (subj && subj.trim()) subjectsOut[poId] = subj.trim();
+      const seeded = cache[poId]?.refPreview ?? "";
+      const v = (subj ?? "").trim();
+      if (v && v !== seeded) subjectsOut[poId] = v;
     }
     return { bodies, subjects: subjectsOut };
   }
@@ -397,7 +401,7 @@ export function BulkSendModal({
   }
 
   // ── Preview / send phase ───────────────────────────────────────────────────
-  const subjectVal = current ? (subjects[current.id] ?? preview?.defaultSubject ?? "") : "";
+  const subjectVal = current ? (subjects[current.id] ?? preview?.refPreview ?? "") : "";
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !sending && onClose()}>
       <DialogContent className="max-w-3xl">
@@ -417,7 +421,9 @@ export function BulkSendModal({
             <div className="space-y-3 text-sm">
               {/* Editable subject */}
               <div className="space-y-1">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Subject (editable)</label>
+                <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Subject (defaults to the reference number — editable)
+                </label>
                 <Input
                   value={subjectVal}
                   onChange={(e) => current && setSubjects((s) => ({ ...s, [current.id]: e.target.value }))}
@@ -440,7 +446,7 @@ export function BulkSendModal({
                 </div>
               )}
               <div className="text-[11px] text-muted-foreground">
-                Attachments: the channel PO PDF + Excel are fetched and attached at send time. The reference number ({preview.refPreview}) is recorded on the PO, not added to the subject.
+                Attachments: the channel PO PDF + Excel are fetched and attached at send time. The subject defaults to the reference number ({preview.refPreview}), which is also recorded on the PO. Edit the subject above to override it.
               </div>
 
               <div className="flex items-center justify-between">

@@ -189,12 +189,12 @@ export async function sendPoPreparationEmail(data: PoEmailData): Promise<PoPrepa
   let ccStr = ccList.join(", ");
 
   // Reference number: reuse the preset one (resend) or atomically issue the next from
-  // the series (distinct per concurrent send). Tracked on the PO by the caller — NOT
-  // forced into the subject.
+  // the series (distinct per concurrent send). Also tracked on the PO by the caller.
   const ref = data.presetRef ?? (await nextEmailRef()).ref;
 
-  // Subject is free editable text: operator override → saved template subject.
-  let subject = data.subjectOverride?.trim() || data.template?.subject || DEFAULT_EMAIL_TEMPLATE.subject;
+  // Subject defaults to this PO's reference number (how each PO is marked); the
+  // operator can override it with free text per send in the preview.
+  let subject = data.subjectOverride?.trim() || ref;
 
   // Test-mode sink: redirect everything to the test address; drop cc so nobody
   // else is mailed. Keep the intended recipients visible in the subject/body.
