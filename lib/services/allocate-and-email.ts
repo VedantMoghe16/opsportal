@@ -451,8 +451,11 @@ export async function buildAndSendPoEmail(
       cc: ccOverride,
       lines: po.lineItems
         .map((l) => {
-          // Quantities are already persisted (approvedQty); fall back to requested.
-          const qty: number = (l.approvedQty ?? 0) > 0 ? l.approvedQty! : l.requestedQty;
+          // Quantities are already persisted (approvedQty). A persisted 0 means the
+          // line was removed/zeroed in the allocator → keep it 0 so the qty>0 filter
+          // drops it. Only fall back to requested when nothing was ever allocated
+          // (approvedQty is null), e.g. a resend of a never-allocated PO.
+          const qty: number = l.approvedQty ?? l.requestedQty;
           const sku = resolveLineInternalSku({
             source: po.source,
             channelCode: l.channelSkuCode ?? l.sku.internalCode,

@@ -80,7 +80,9 @@ async function renderPreview(poId: string, overrides: PreviewOverrides) {
   const qtyForLine = (l: { skuId: string; approvedQty: number | null; requestedQty: number }) => {
     if (allocMap) return allocMap.get(l.skuId) ?? 0; // explicit: unknown SKU = not allocated
     if (excluded.has(l.skuId)) return 0;
-    return (l.approvedQty ?? 0) > 0 ? l.approvedQty! : l.requestedQty;
+    // A persisted 0 means the line was removed/zeroed; keep it 0 (dropped by the
+    // qty>0 filter). Only fall back to requested when nothing was ever allocated.
+    return l.approvedQty ?? l.requestedQty;
   };
 
   const eanMap = await mapEansToInternal(po.lineItems.map((l) => eanFromRaw(l.rawData))).catch(
