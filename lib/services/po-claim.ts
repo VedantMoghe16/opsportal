@@ -2,8 +2,15 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 
-/** How long a claim is held without activity before it's considered abandoned. */
-export const CLAIM_TTL_MS = 20 * 60_000; // 20 minutes
+/**
+ * How long a claim survives without a heartbeat before it's considered abandoned.
+ * The allocate page heartbeats (re-POSTs the claim) every ~30s while open and
+ * visible, so an active editor's claim never goes stale — but the moment they
+ * close the tab / walk away / lose the network, heartbeats stop and the claim
+ * frees itself within this window so others can take over. Keep this comfortably
+ * above the client heartbeat interval (a few missed beats of tolerance).
+ */
+export const CLAIM_TTL_MS = 2 * 60_000; // 2 minutes
 
 export interface Actor {
   id: string;

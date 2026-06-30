@@ -69,26 +69,66 @@ export function PoAllocator({
   // claim-on-mount below upgrades it to true if someone grabbed it between SSR & mount.
   const [locked, setLocked] = useState(lockedByOther);
 
-  // Acquire the claim when this page mounts (so others see it locked); release it on
-  // unmount/navigation. The atomic server gate is the real guard — this is the UX.
+  // Claim lifecycle. The atomic server gate (claimPo inside the send txn) is the real
+  // guard — this keeps the UX honest:
+  //  • Acquire on mount, then HEARTBEAT every 30s while the tab is visible so an active
+  //    editor's claim never goes stale (claimedAt keeps refreshing under the TTL).
+  //  • A hidden/closed tab stops heartbeating, so an abandoned claim auto-frees within
+  //    the (short) TTL — no reliance on a fragile unload request.
+  //  • While locked by someone else, the same poll keeps trying to acquire; the instant
+  //    their claim goes stale this tab TAKES it over and unlocks itself (no manual reload).
   useEffect(() => {
-    if (lockedByOther) return;
     let active = true;
-    fetch(`/api/pos/${poId}/claim`, { method: "POST" })
-      .then((r) => r.json())
-      .then((j) => {
-        if (active && j?.success && j.data?.ok === false) {
-          setLocked(true);
-          toast.warning(`This PO is being allocated by ${j.data.claimedByLabel ?? "another user"}.`);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-      // Best-effort release; keepalive lets it complete during navigation.
+    const HEARTBEAT_MS = 30_000;
+
+    // POST /claim = acquire-or-refresh. ok:true → we hold it (unlock); ok:false →
+    // someone else holds a fresh claim (lock). claimPo never steals a non-stale claim.
+    const sync = async (announceTakeover = false) => {
+      try {
+        const r = await fetch(`/api/pos/${poId}/claim`, { method: "POST" });
+        const j = await r.json();
+        if (!active || !j?.success || !j.data) return;
+        const held = j.data.ok === true;
+        setLocked((wasLocked) => {
+          if (held && wasLocked && announceTakeover) {
+            toast.success("This PO is now free — you can allocate it.");
+          } else if (!held && !wasLocked) {
+            toast.warning(`This PO is being allocated by ${j.data.claimedByLabel ?? "another user"}.`);
+          }
+          return !held;
+        });
+      } catch {
+        /* network blip — keep current state; the next tick retries */
+      }
+    };
+
+    sync(); // acquire (or discover it's locked) immediately on mount
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") sync(true);
+    }, HEARTBEAT_MS);
+
+    // Re-acquire as soon as the user returns to the tab (don't wait for the next tick).
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") sync(true);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    // Best-effort release on tab close / navigation. The short TTL is the real backstop
+    // if this never fires (browser crash, network loss, OS sleep).
+    const release = () => {
       fetch(`/api/pos/${poId}/claim`, { method: "DELETE", keepalive: true }).catch(() => {});
     };
-  }, [poId, lockedByOther]);
+    window.addEventListener("pagehide", release);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", release);
+      release();
+    };
+  }, [poId]);
   const [alloc, setAlloc] = useState<Record<string, number>>(() =>
     Object.fromEntries(lines.map((l) => [l.skuId, l.approvedQty ?? l.requestedQty ?? 0])),
   );
