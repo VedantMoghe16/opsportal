@@ -54,7 +54,7 @@ export default async function AllocatePoPage({ params }: { params: { id: string 
     ? warehouseByDispatchFrom(dispatch.dispatchFrom)
     : null;
 
-  const taxValidation = validatePoTaxables(po);
+  const taxValidation = validatePoTaxables(po, eanMap);
   const mismatchLines = taxValidation.lines.filter((l) => l.mismatch);
   const flagByLine = new Map(taxValidation.lines.map((l) => [l.lineId, l]));
 

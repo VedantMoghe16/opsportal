@@ -1,5 +1,5 @@
 import { skuMasterMaps } from "@/lib/sku-master-runtime";
-import { isSkuMapped, pvIdFromRaw } from "@/lib/services/sku-resolver";
+import { pvIdFromRaw, eanFromRaw, resolveLineInternalSku } from "@/lib/services/sku-resolver";
 
 export interface TaxableLineResult {
   lineId: string;
@@ -127,18 +127,8 @@ type PoWithLines = {
   }>;
 };
 
-export function validatePoTaxables(po: PoWithLines): TaxableValidationResult {
+export function validatePoTaxables(po: PoWithLines, eanMap?: Map<string, string>): TaxableValidationResult {
   const channelExpected = skuMasterMaps().expectedTaxable[channelKey(po.channel.name)] ?? {};
-
-  // Self-calibrate unmapped detection. We only flag a line as a new/unknown SKU when
-  // the channel's mapping is demonstrably AUTHORITATIVE for this PO — i.e. it already
-  // maps the large majority (≥80%) of the lines. That way:
-  //  • Nykaa (maps ~all lines) → a rare miss is flagged as genuinely new. ✓
-  //  • Zepto (map keyed by UUIDs we don't store → maps 0%) → never flagged. ✓
-  //  • Blinkit (sparse/incomplete map → maps a minority) → not treated as authoritative,
-  //    so its many already-known-but-unmapped SKUs don't flood the review. ✓
-  const mappedCount = po.lineItems.filter((li) => isSkuMapped(po.channel.name, li.channelSkuCode, pvIdFromRaw(li.rawData))).length;
-  const mapIsAuthoritative = po.lineItems.length > 0 && mappedCount / po.lineItems.length >= 0.8;
 
   const lines: TaxableLineResult[] = po.lineItems.map((li) => {
     const raw = (typeof li.rawData === "object" && li.rawData !== null && !Array.isArray(li.rawData)
@@ -147,7 +137,21 @@ export function validatePoTaxables(po: PoWithLines): TaxableValidationResult {
 
     const internalSku = li.sku.internalCode;
     const expected: number | null = channelExpected[internalSku] ?? null;
-    const unmapped = mapIsAuthoritative && !isSkuMapped(po.channel.name, li.channelSkuCode, pvIdFromRaw(raw));
+
+    // Per-line unmapped detection (no PO-level ratio gate). Resolve the line through
+    // every path we have — channel-code map → EAN → Zepto PVID — and if the result is
+    // STILL a raw platform id (all-digits, 6+), the SKU isn't in our master and we
+    // can't ship it: flag it. Real Moxie internal codes are alphanumeric (e.g. WLIC50),
+    // so they never match. Channels with no mapping table / blank codes resolve to an
+    // alphanumeric internal code and pass through unflagged.
+    const resolvedInternal = resolveLineInternalSku({
+      source: po.channel.name,
+      channelCode: li.channelSkuCode ?? internalSku,
+      pvId: pvIdFromRaw(raw),
+      ean: eanFromRaw(raw),
+      eanMap,
+    });
+    const unmapped = /^\d{6,}$/.test(resolvedInternal);
     const { value: actual, confidence } = extractActual(
       po.channel.name,
       raw,
