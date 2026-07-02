@@ -6,8 +6,26 @@ import { computeFillRates } from "@/lib/services/fill-rate";
 import { grnPortalUrl } from "@/lib/services/portal-links";
 import { currentActor } from "@/lib/auth";
 import { isClaimedByOther } from "@/lib/services/po-claim";
+import { resolveFields } from "@/lib/integrations/blinkit/fields";
 
 const DAY = 86_400_000;
+
+/**
+ * Resolve a PO's destination facility/outlet from its raw source row.
+ * Uses the same fuzzy header resolver as the channel dashboard so the
+ * Allocation "Facility" column matches the channel "Outlet" column
+ * (Zepto/Nykaa store it under keys like `location`/`warehouse_location`,
+ * not the literal `facility_name`/`facility`).
+ */
+function resolveFacility(raw: Record<string, string>): string | null {
+  const fm = resolveFields(Object.keys(raw));
+  const pick = (header: string | undefined) => {
+    if (!header) return null;
+    const v = raw[header];
+    return v && String(v).trim() ? String(v).trim() : null;
+  };
+  return pick(fm.facility) ?? pick(fm.city) ?? null;
+}
 
 /** Counts used for sidebar badges. */
 export async function getNavCounts() {
@@ -170,7 +188,7 @@ export async function getAllocationList() {
       poDate: p.poDate,
       totalRequestedValue: p.totalRequestedValue,
       channel: p.channel,
-      facility: raw.facility_name ?? raw.facility ?? null,
+      facility: resolveFacility(raw),
       skuCount: p.lineItems.length,
       orderedUnits: ordered,
       allocatedUnits: allocated,
