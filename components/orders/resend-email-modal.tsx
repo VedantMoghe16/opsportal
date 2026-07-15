@@ -82,7 +82,7 @@ export function ResendEmailModal({
     }
   }
 
-  async function resend() {
+  async function resend(force = false) {
     const toList = splitEmails(to);
     const ccList = splitEmails(cc);
     if (toList.length === 0) {
@@ -94,9 +94,17 @@ export function ResendEmailModal({
       const res = await fetch(`/api/pos/${poId}/resend-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: toList, cc: ccList, subject: subject.trim() || undefined }),
+        body: JSON.stringify({ to: toList, cc: ccList, subject: subject.trim() || undefined, ...(force ? { force: true } : {}) }),
       });
       const json = await res.json();
+      // 409 = this PO was already emailed. Confirm before sending a duplicate.
+      if (res.status === 409 && !force) {
+        if (typeof window !== "undefined" && window.confirm(`${json.error}\n\nSend this PO again anyway?`)) {
+          setSending(false);
+          return resend(true);
+        }
+        return;
+      }
       if (!json.success) throw new Error(json.error ?? "Resend failed");
       toast.success(`Resent ${preview?.emailRef ?? "email"} to ${toList.length} recipient${toList.length > 1 ? "s" : ""}`);
       setOpen(false);
@@ -177,7 +185,7 @@ export function ResendEmailModal({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={sending}>Cancel</Button>
-          <Button onClick={resend} disabled={sending || loading || !preview}>
+          <Button onClick={() => resend()} disabled={sending || loading || !preview}>
             {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
             {sending ? "Resending…" : "Resend now"}
           </Button>

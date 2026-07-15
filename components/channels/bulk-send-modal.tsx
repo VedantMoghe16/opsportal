@@ -29,14 +29,29 @@ export interface SendSummary {
   failed: number;
 }
 
-/** Per-PO send outcome (from allocate-bulk). */
+/** Per-PO send outcome (from allocate-bulk, reconciled against server truth). */
 interface SendResult {
   poId: string;
   ok: boolean;
   mismatchWithheld?: boolean;
   emailFailed?: boolean;
+  /** Email was not re-sent because the PO was already SENT (idempotency guard). */
+  alreadySent?: boolean;
   emailRef?: string | null;
+  /** Who sent it (logged-in Moxie user), from server truth. */
+  emailSentBy?: string | null;
   error?: string;
+}
+
+/** Server-authoritative send state for a PO (GET /api/pos/send-status). */
+interface PoSendStatus {
+  poId: string;
+  channelPoNumber: string | null;
+  emailStatus: string;
+  emailRef: string | null;
+  emailSentAt: string | null;
+  emailSentBy: string | null;
+  emailHoldReason: string | null;
 }
 
 interface Preview {
@@ -58,7 +73,9 @@ const BATCH_SIZE = 10;
 const BATCH_DELAY_MS = 120_000; // 2 minutes between batches
 
 const isFailed = (r: SendResult) => !r.ok || r.emailFailed;
-const isSent = (r: SendResult) => r.ok && !r.emailFailed && !r.mismatchWithheld;
+// An already-SENT PO is neither a fresh send nor a failure — the guard skipped it.
+const isSent = (r: SendResult) => r.ok && !r.emailFailed && !r.mismatchWithheld && !r.alreadySent;
+const isAlreadySent = (r: SendResult) => r.ok && r.alreadySent === true;
 
 /**
  * Review the dispatch email for each selected PO one at a time (Prev/Next), edit
@@ -257,6 +274,40 @@ export function BulkSendModal({
     return json.data.results as SendResult[];
   }
 
+  /**
+   * Reconcile what actually went out from SERVER TRUTH, not the browser's tally. After a
+   * run we ask the DB for each PO's real emailStatus — so a batch whose HTTP response was
+   * lost (timeout / 500) can't make us think a delivered PO still needs sending (the bug
+   * that caused the duplicate sends). Falls back to the client results if the status
+   * lookup itself fails, marking anything unknown as "verify" rather than silently sent.
+   */
+  async function reconcileFromServer(poIds: string[], clientResults: SendResult[]): Promise<SendResult[]> {
+    const clientById = new Map(clientResults.map((r) => [r.poId, r]));
+    try {
+      const res = await fetch(`/api/pos/send-status?ids=${encodeURIComponent(poIds.join(","))}`);
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "status lookup failed");
+      const byId = new Map((json.data.statuses as PoSendStatus[]).map((s) => [s.poId, s]));
+      return poIds.map((id) => {
+        const s = byId.get(id);
+        const c = clientById.get(id);
+        if (!s) return c ?? { poId: id, ok: false, error: "status unknown — verify before resending" };
+        if (s.emailStatus === "SENT") {
+          return { poId: id, ok: true, emailRef: s.emailRef, emailSentBy: s.emailSentBy, alreadySent: c?.alreadySent === true };
+        }
+        const reason =
+          s.emailHoldReason ??
+          (s.emailStatus === "HELD" ? "Email reached no one — open the PO to add recipients"
+            : s.emailStatus === "FAILED" ? "Send failed"
+            : "Not sent");
+        return { poId: id, ok: true, emailFailed: true, emailRef: s.emailRef, error: reason };
+      });
+    } catch (e) {
+      console.error("[bulk-send] server reconcile failed, using client results:", e);
+      return poIds.map((id) => clientById.get(id) ?? { poId: id, ok: false, error: "status unknown — verify before resending" });
+    }
+  }
+
   async function sendAll() {
     const edited = collectEdits();
     setSending(true);
@@ -282,7 +333,9 @@ export function BulkSendModal({
       return;
     }
 
-    // Default path: batched allocate-bulk.
+    // Default path: batched allocate-bulk. NEVER abort mid-run — a failed batch (timeout
+    // /500) must not strand the batches after it, and must not hide what already went out.
+    // We process every PO, then reconcile against server truth to see what really sent.
     const batches: BulkPo[][] = [];
     for (let i = 0; i < pos.length; i += BATCH_SIZE) batches.push(pos.slice(i, i + BATCH_SIZE));
     const all: SendResult[] = [];
@@ -290,26 +343,34 @@ export function BulkSendModal({
     try {
       for (const [b, batch] of batches.entries()) {
         if (b > 0) await waitBetweenBatches(); // skippable pause between batches
-        const batchResults = await postBatch(batch, edited);
-        all.push(...batchResults);
+        try {
+          const batchResults = await postBatch(batch, edited);
+          all.push(...batchResults);
+        } catch (e) {
+          // A batch request failed as a whole — record placeholders and keep going. The
+          // server may still have sent some/all of them; reconcile decides from the DB.
+          console.error("[bulk-send] batch request failed, continuing:", e);
+          for (const p of batch) all.push({ poId: p.id, ok: false, error: e instanceof Error ? e.message : "batch request failed" });
+        }
         setProgress({ done: all.length, total: pos.length });
       }
-      setResults(all);
-      const sent = all.filter(isSent).length;
-      const withheld = all.filter((r) => r.mismatchWithheld).length;
-      const failed = all.filter(isFailed).length;
-      if (failed === 0) {
-        toast.success(
-          `Allocated & sent ${sent}/${total}` + (withheld ? ` · ${withheld} held (price mismatch)` : ""),
-        );
+
+      // Server-authoritative truth: the DB knows which POs actually went out.
+      const reconciled = await reconcileFromServer(pos.map((p) => p.id), all);
+      setResults(reconciled);
+
+      const sent = reconciled.filter(isSent).length;
+      const skipped = reconciled.filter(isAlreadySent).length;
+      const notSent = reconciled.filter(isFailed).length;
+      if (notSent === 0) {
+        toast.success(`Sent ${sent}/${total}` + (skipped ? ` · ${skipped} already sent` : ""));
         onSent();
         onClose();
       } else {
-        // Keep the modal open on the result screen so failed sends can be retried.
-        // Don't call onSent() here — parents treat it as "close" (it unmounts the
-        // modal), which would destroy this result screen. The underlying list is
-        // refreshed when the operator clicks Done.
-        toast.warning(`${sent} sent · ${failed} failed — retry the failed ones below`);
+        // Keep the modal open on the result screen so ONLY the not-sent POs can be sent.
+        // Don't call onSent() here — parents treat it as "close" (it unmounts the modal),
+        // which would destroy this result screen. The list refreshes when they click Done.
+        toast.warning(`${sent} sent · ${notSent} not sent — review below and send only those`);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Send failed");
@@ -320,7 +381,7 @@ export function BulkSendModal({
     }
   }
 
-  async function resendOne(poId: string) {
+  async function resendOne(poId: string, force = false) {
     setResending((s) => new Set(s).add(poId));
     try {
       const res = await fetch(`/api/pos/${poId}/resend-email`, {
@@ -329,11 +390,20 @@ export function BulkSendModal({
         body: JSON.stringify({
           ...(edits.current[poId] ? { bodyHtml: edits.current[poId] } : {}),
           ...(subjects[poId]?.trim() ? { subject: subjects[poId].trim() } : {}),
+          ...(force ? { force: true } : {}),
         }),
       });
       const json = await res.json();
+      // 409 = already sent. Confirm with the operator, then retry with force so an
+      // accidental duplicate never goes out silently.
+      if (res.status === 409 && !force) {
+        if (typeof window !== "undefined" && window.confirm(`${json.error}\n\nSend this PO again anyway?`)) {
+          return resendOne(poId, true);
+        }
+        return;
+      }
       if (!json.success) throw new Error(json.error || "Resend failed");
-      setResults((rs) => rs?.map((r) => (r.poId === poId ? { ...r, ok: true, emailFailed: false, emailRef: json.data.emailRef } : r)) ?? null);
+      setResults((rs) => rs?.map((r) => (r.poId === poId ? { ...r, ok: true, emailFailed: false, alreadySent: false, emailRef: json.data.emailRef } : r)) ?? null);
       toast.success("Resent");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Resend failed");
@@ -346,18 +416,22 @@ export function BulkSendModal({
     }
   }
 
-  async function resendAllFailed() {
-    const failed = (results ?? []).filter(isFailed).map((r) => r.poId);
-    for (const poId of failed) await resendOne(poId);
+  async function sendAllNotSent() {
+    // Only the POs the DB says are NOT sent. Already-sent POs are never in this list, so
+    // this can't duplicate — and each resend still hits the server-side idempotency guard.
+    const notSent = (results ?? []).filter(isFailed).map((r) => r.poId);
+    for (const poId of notSent) await resendOne(poId);
   }
 
   const poNumberOf = (poId: string) => pos.find((p) => p.id === poId)?.poNumber ?? poId;
 
   // ── Result phase ──────────────────────────────────────────────────────────
   if (results) {
-    const failed = results.filter(isFailed);
+    const notSent = results.filter(isFailed);
     const sent = results.filter(isSent).length;
     const withheld = results.filter((r) => r.mismatchWithheld).length;
+    const skipped = results.filter(isAlreadySent).length;
+    const sentBy = results.find((r) => r.emailSentBy)?.emailSentBy ?? null;
     return (
       <Dialog open={open} onOpenChange={(o) => { if (!o) { onSent(); onClose(); } }}>
         <DialogContent className="max-w-2xl">
@@ -366,31 +440,38 @@ export function BulkSendModal({
           </DialogHeader>
           <div className="flex flex-wrap gap-3 text-sm">
             <span className="inline-flex items-center gap-1.5 text-emerald-600"><CheckCircle2 className="h-4 w-4" /> {sent} sent</span>
+            {skipped > 0 && <span className="inline-flex items-center gap-1.5 text-sky-600" title="Already emailed earlier — not re-sent to avoid duplicates"><CheckCircle2 className="h-4 w-4" /> {skipped} already sent</span>}
             {withheld > 0 && <span className="inline-flex items-center gap-1.5 text-amber-600"><AlertTriangle className="h-4 w-4" /> {withheld} held (price mismatch)</span>}
-            {failed.length > 0 && <span className="inline-flex items-center gap-1.5 text-rose-600"><XCircle className="h-4 w-4" /> {failed.length} failed</span>}
+            {notSent.length > 0 && <span className="inline-flex items-center gap-1.5 text-rose-600"><XCircle className="h-4 w-4" /> {notSent.length} not sent</span>}
           </div>
+          {sentBy && <p className="text-xs text-muted-foreground">Sent by {sentBy}</p>}
 
-          {failed.length > 0 && (
-            <div className="max-h-[40vh] space-y-2 overflow-auto rounded-lg border border-border/70 p-3">
-              {failed.map((r) => (
-                <div key={r.poId} className="flex items-center justify-between gap-3 text-sm">
-                  <div className="min-w-0">
-                    <span className="font-medium">{poNumberOf(r.poId)}</span>
-                    <span className="ml-2 truncate text-xs text-muted-foreground">{r.error ?? "email send failed"}</span>
+          {notSent.length > 0 && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                These POs did <span className="font-medium text-foreground">not</span> go out. Only these will be sent — the ones already delivered above are left untouched.
+              </p>
+              <div className="max-h-[40vh] space-y-2 overflow-auto rounded-lg border border-border/70 p-3">
+                {notSent.map((r) => (
+                  <div key={r.poId} className="flex items-center justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <span className="font-medium">{poNumberOf(r.poId)}</span>
+                      <span className="ml-2 truncate text-xs text-muted-foreground">{r.error ?? "not sent"}</span>
+                    </div>
+                    <Button size="sm" variant="outline" disabled={resending.has(r.poId)} onClick={() => resendOne(r.poId)} className="gap-1.5">
+                      {resending.has(r.poId) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                      Send
+                    </Button>
                   </div>
-                  <Button size="sm" variant="outline" disabled={resending.has(r.poId)} onClick={() => resendOne(r.poId)} className="gap-1.5">
-                    {resending.has(r.poId) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                    Resend
-                  </Button>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </>
           )}
 
           <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
-            {failed.length > 0 ? (
-              <Button variant="outline" onClick={resendAllFailed} disabled={resending.size > 0} className="gap-2">
-                <RotateCcw className="h-4 w-4" /> Resend all failed ({failed.length})
+            {notSent.length > 0 ? (
+              <Button variant="outline" onClick={sendAllNotSent} disabled={resending.size > 0} className="gap-2">
+                <RotateCcw className="h-4 w-4" /> Send all not-sent ({notSent.length})
               </Button>
             ) : <span />}
             <Button onClick={() => { onSent(); onClose(); }}>Done</Button>

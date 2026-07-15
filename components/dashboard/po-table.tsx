@@ -38,6 +38,8 @@ export interface PoRow {
   createdAt: Date | string;
   emailRef?: string | null;
   emailStatus?: string | null;
+  emailSentAt?: Date | string | null;
+  emailSentBy?: string | null;
   channel: { id: string; name: string; logoColor: string | null; tier: string };
   _count: { lineItems: number };
 }
@@ -168,6 +170,7 @@ export function PoTable({
                   </SelectFilter>
                 </ColumnFilter>
               </TableHead>
+              <TableHead>Sent by</TableHead>
               <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -207,6 +210,13 @@ export function PoTable({
                     <div className="mt-0.5 font-mono text-[11px] text-muted-foreground" title="PO-preparation email reference">
                       {po.emailRef}
                     </div>
+                  )}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {po.emailSentBy ? (
+                    <span title={po.emailSentAt ? `Sent ${formatDate(po.emailSentAt)}` : undefined}>{po.emailSentBy}</span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
                   )}
                 </TableCell>
                 <TableCell className="text-right">

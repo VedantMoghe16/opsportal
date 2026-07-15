@@ -115,6 +115,11 @@ export interface AllocateResult {
   heldNoRecipients?: boolean;
   /** Why the email was held (shown in the resend preview banner). */
   emailHoldReason?: string;
+  /** True when the send was SKIPPED because the PO was already SENT and no `force` was
+   *  given — the idempotency guard that stops a re-run/re-click from duplicating mail. */
+  alreadySent?: boolean;
+  /** When the PO was already SENT, the time of that original delivery. */
+  emailSentAt?: Date | null;
 }
 
 /** Operator-edited email fields from the review/preview step. */
@@ -143,6 +148,11 @@ export interface PoEmailSendResult {
   heldNoRecipients?: boolean;
   /** Reason text when heldNoRecipients (shown in the resend preview banner). */
   emailHoldReason?: string;
+  /** True when the send was SKIPPED because the PO was already SENT and no `force` was
+   *  given (idempotency guard against duplicate sends). */
+  alreadySent?: boolean;
+  /** When alreadySent, the time of the original delivery. */
+  emailSentAt?: Date | null;
 }
 
 export async function allocateAndEmailPo(
@@ -206,6 +216,11 @@ export async function allocateAndEmailPo(
   // Price-mismatch withheld → allocation is saved but no email/WMS push.
   if (emailRes.mismatchWithheld) {
     return { emailMessageId: null, mismatchWithheld: true, mismatches: emailRes.mismatches };
+  }
+  // Already sent → the idempotency guard skipped the email. Skip the WMS push too, or a
+  // re-run would push a duplicate sales order and double-decrement stock. Nothing to do.
+  if (emailRes.alreadySent) {
+    return { emailMessageId: null, alreadySent: true, emailRef: emailRes.emailRef, emailSentAt: emailRes.emailSentAt };
   }
   const emailMessageId = emailRes.emailMessageId;
 
@@ -326,6 +341,8 @@ export async function allocateAndEmailPo(
     emailRef: emailRes.emailRef,
     heldNoRecipients: emailRes.heldNoRecipients,
     emailHoldReason: emailRes.emailHoldReason,
+    alreadySent: emailRes.alreadySent,
+    emailSentAt: emailRes.emailSentAt,
   };
 }
 
@@ -346,6 +363,9 @@ export async function buildAndSendPoEmail(
     acknowledgeMismatch?: boolean;
     emailOverrides?: PoEmailOverrides;
     actorLabel?: string;
+    /** Send even if the PO is already SENT. Only the explicit, operator-confirmed resend
+     *  path sets this; the allocate/bulk path leaves it false so a re-run never duplicates. */
+    force?: boolean;
   } = {},
 ): Promise<PoEmailSendResult> {
   const actorLabel = opts.actorLabel ?? "system";
@@ -356,6 +376,8 @@ export async function buildAndSendPoEmail(
       rawData: true,
       source: true,
       emailRef: true,
+      emailStatus: true,
+      emailSentAt: true,
       channel: { select: { name: true } },
       lineItems: {
         select: {
@@ -372,6 +394,30 @@ export async function buildAndSendPoEmail(
     },
   });
   if (!po) return { emailMessageId: null, emailFailed: true, emailError: "PO not found" };
+
+  // ── Idempotency guard ──
+  // If this PO's prep email already went out (emailStatus=SENT), do NOT send again
+  // unless the caller explicitly forces it. This is the guard that stops a re-run of
+  // the bulk send, a double-click, or a stale "resend" from mailing the warehouse the
+  // same PO twice (root cause of the 15 Blinkit POs re-sent an hour later). The explicit
+  // resend endpoint passes force=true only after the operator confirms.
+  if (!opts.force && po.emailStatus === "SENT") {
+    await writeAudit({
+      entityType: "PurchaseOrder",
+      entityId: poId,
+      action: "EMAIL_RESEND_SKIPPED_ALREADY_SENT",
+      performedBy: actorLabel,
+      changes: { ref: po.emailRef, emailSentAt: po.emailSentAt },
+    }).catch(() => {});
+    console.warn(`[allocate-and-email] skipping duplicate send for PO ${poId} [${po.emailRef}] — already SENT at ${po.emailSentAt?.toISOString()}`);
+    return {
+      emailMessageId: null,
+      emailFailed: false,
+      alreadySent: true,
+      emailRef: po.emailRef,
+      emailSentAt: po.emailSentAt,
+    };
+  }
 
   // Price-mismatch gate: validate channel prices vs the SKU-master rate sheet.
   // Withhold the email (allocation already saved) unless the caller acknowledged.
@@ -537,10 +583,10 @@ export async function buildAndSendPoEmail(
       presetRef: ref,
     });
 
-    // Delivered → record ref + sent time, clear any prior hold, mark SENT.
+    // Delivered → record ref + sent time + who sent it, clear any prior hold, mark SENT.
     await prisma.purchaseOrder.update({
       where: { id: poId },
-      data: { emailRef: result.ref, emailSentAt: new Date(), emailStatus: "SENT", emailHoldReason: null },
+      data: { emailRef: result.ref, emailSentAt: new Date(), emailStatus: "SENT", emailHoldReason: null, emailSentBy: actorLabel },
     }).catch((err) => console.error("[allocate-and-email] failed to persist emailRef:", err));
     await writeAudit({
       entityType: "PurchaseOrder",

@@ -155,6 +155,9 @@ model PurchaseOrder {
   emailStatus           String    @default("NOT_SENT")
   // Human-readable reason when emailStatus is HELD/FAILED (shown in the resend preview).
   emailHoldReason       String?
+  // Who triggered the successful send (logged-in Moxie user name/email from currentActor).
+  // Overwritten by a later forced resend so it reflects who last sent it. Null until sent.
+  emailSentBy           String?
   // Multi-user allocation lock: who is currently working this PO. Acquired when a
   // user opens it to allocate; released on send / cancel / TTL expiry. The atomic
   // claim check at allocation time is what prevents two people double-allocating.
