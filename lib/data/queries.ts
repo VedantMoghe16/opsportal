@@ -254,6 +254,8 @@ export async function getOrders() {
       createdAt: true,
       emailRef: true,
       emailStatus: true,
+      emailSentAt: true,
+      emailSentBy: true,
       channel: { select: { id: true, name: true, logoColor: true, tier: true } },
       _count: { select: { lineItems: true } },
     },

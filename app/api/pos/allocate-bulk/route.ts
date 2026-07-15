@@ -34,6 +34,9 @@ export interface BulkAllocateResult {
   heldNoRecipients?: boolean;
   /** Why the email was held (shown in the resend preview). */
   emailHoldReason?: string;
+  /** Email was NOT re-sent because the PO was already SENT (idempotency guard) — a
+   *  re-run of the bulk send reports this instead of duplicating the mail. */
+  alreadySent?: boolean;
   emailRef?: string | null;
   error?: string;
 }
@@ -51,7 +54,7 @@ export async function POST(req: NextRequest) {
     const results: BulkAllocateResult[] = [];
     for (const poId of poIds) {
       try {
-        const { emailMessageId, mismatchWithheld, emailFailed, emailRef, heldNoRecipients, emailHoldReason } =
+        const { emailMessageId, mismatchWithheld, emailFailed, emailRef, heldNoRecipients, emailHoldReason, alreadySent } =
           await allocateAndEmailPo(
             poId,
             { full: true, excludeSkuIds: removals?.[poId] ?? [] },
@@ -59,7 +62,7 @@ export async function POST(req: NextRequest) {
             acknowledge ?? false,
             { bodyHtml: bodies?.[poId], subject: subjects?.[poId] },
           );
-        results.push({ poId, ok: true, emailMessageId, mismatchWithheld, emailFailed, heldNoRecipients, emailHoldReason, emailRef });
+        results.push({ poId, ok: true, emailMessageId, mismatchWithheld, emailFailed, heldNoRecipients, emailHoldReason, alreadySent, emailRef });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         console.error(`[allocate-bulk] PO ${poId} failed:`, err);
