@@ -3,6 +3,7 @@ import { env } from "@/lib/env";
 import { getTokens } from "@/lib/integrations/zepto/auth";
 import { ZeptoClient, ZeptoAuthExpired, type RawZeptoPo } from "@/lib/integrations/zepto/client";
 import { ingestLiveZeptoPOs, type IngestSummary } from "@/lib/services/zepto-ingest";
+import { writeAudit } from "@/lib/services/audit";
 
 const IST_OFFSET_MS = 5.5 * 3_600_000;
 const PO_FETCH_CONCURRENCY = 10;
@@ -68,6 +69,38 @@ function findLineArray(po: RawZeptoPo): RawZeptoPo[] | null {
  * every line, and creates a summary PoLineItem when the API returns headers only.
  */
 export async function syncZepto(opts: { since?: string; until?: string; actorLabel?: string } = {}): Promise<SyncResult> {
+  try {
+    const result = await syncZeptoInner(opts);
+    // Persisted sync-health record: without it a failed or empty sync is
+    // indistinguishable in the UI from "no new POs" (last-synced is derived
+    // from PurchaseOrder.updatedAt only).
+    await writeAudit({
+      entityType: "ChannelSync",
+      entityId: "zepto",
+      action: "SYNC_OK",
+      performedBy: opts.actorLabel ?? "Zepto sync",
+      changes: {
+        since: result.since,
+        until: result.until,
+        posUpserted: result.summary.posUpserted,
+        lineItems: result.summary.lineItems,
+        warnings: result.summary.warnings.slice(0, 25),
+      },
+    }).catch((e) => console.warn("[zepto-sync] audit write failed:", e));
+    return result;
+  } catch (err) {
+    await writeAudit({
+      entityType: "ChannelSync",
+      entityId: "zepto",
+      action: "SYNC_FAILED",
+      performedBy: opts.actorLabel ?? "Zepto sync",
+      changes: { error: err instanceof Error ? err.message : String(err) },
+    }).catch((e) => console.warn("[zepto-sync] audit write failed:", e));
+    throw err;
+  }
+}
+
+async function syncZeptoInner(opts: { since?: string; until?: string; actorLabel?: string } = {}): Promise<SyncResult> {
   const since = opts.since ?? istDaysAgo(30);
   const until = opts.until ?? istDaysAgo(-1);
 
@@ -86,6 +119,9 @@ export async function syncZepto(opts: { since?: string; until?: string; actorLab
         const items = await withTimeout(client.fetchPoItems(poId), PO_FETCH_TIMEOUT_MS);
         if (items.length) (po as Record<string, unknown>).items = items;
       } catch (err) {
+        // Auth expiry must escape: a silent fallback here ingests header-only POs
+        // (receivedQty=0, no GRN) while the run still reports success.
+        if (err instanceof ZeptoAuthExpired) throw err;
         console.warn(`[zepto-sync] items fetch failed for PO ${poId}: ${err instanceof Error ? err.message : err}`);
       }
     }, PO_FETCH_CONCURRENCY);

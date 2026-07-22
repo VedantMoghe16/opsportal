@@ -23,7 +23,7 @@ import {
   useDebounced, inNumberRange, inDateRange,
 } from "@/components/shared/table-filters";
 import { PO_STATUS_META, PRIORITY_META } from "@/lib/status";
-import { formatINR, formatDate } from "@/lib/utils";
+import { formatINR, formatDate, formatDateTime } from "@/lib/utils";
 import { CHANNELS } from "@/lib/channels";
 
 export interface PoRow {
@@ -170,7 +170,7 @@ export function PoTable({
                   </SelectFilter>
                 </ColumnFilter>
               </TableHead>
-              <TableHead>Sent by</TableHead>
+              <TableHead>Issued</TableHead>
               <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -213,8 +213,13 @@ export function PoTable({
                   )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {po.emailSentBy ? (
-                    <span title={po.emailSentAt ? `Sent ${formatDate(po.emailSentAt)}` : undefined}>{po.emailSentBy}</span>
+                  {po.emailSentAt ? (
+                    <div title={`PO issued ${formatDateTime(po.emailSentAt)} IST${po.emailSentBy ? ` by ${po.emailSentBy}` : ""}`}>
+                      <div className="whitespace-nowrap text-foreground">{formatDateTime(po.emailSentAt)}</div>
+                      {po.emailSentBy && <div className="text-[11px]">by {po.emailSentBy}</div>}
+                    </div>
+                  ) : po.emailSentBy ? (
+                    <span>{po.emailSentBy}</span>
                   ) : (
                     <span className="text-muted-foreground/50">—</span>
                   )}

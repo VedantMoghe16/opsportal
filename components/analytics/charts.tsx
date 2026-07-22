@@ -56,7 +56,7 @@ export function AnalyticsCharts({ data }: { data: KpiData }) {
         <CardHeader><CardTitle className="text-base">Fill rate by channel · gross vs net</CardTitle></CardHeader>
         <CardContent>
           {!hasChannelFill ? (
-            <ChartEmpty message="No delivered POs in the last 30 days." />
+            <ChartEmpty message="No GRNs received in the last 30 days — fill rate appears once channel GRNs sync in." />
           ) : (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.fillRateByChannel} margin={{ left: -16 }}>

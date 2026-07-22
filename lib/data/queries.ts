@@ -378,6 +378,71 @@ export async function getGrns() {
   });
 }
 
+/**
+ * GRN follow-up view over POs issued from this portal (emailStatus SENT):
+ * which have a GRN back (and at what fill rate), and which are still awaiting one.
+ */
+export async function getIssuedPoGrnStatus() {
+  const pos = await prisma.purchaseOrder.findMany({
+    where: { emailStatus: "SENT" },
+    orderBy: { emailSentAt: "desc" },
+    select: {
+      id: true,
+      channelPoNumber: true,
+      emailRef: true,
+      emailSentAt: true,
+      channel: { select: { name: true, logoColor: true } },
+      lineItems: { select: { skuId: true, requestedQty: true, approvedQty: true, rawData: true } },
+      grnRecord: {
+        select: { receivedAt: true, status: true, lineItems: { select: { skuId: true, receivedQty: true } } },
+      },
+    },
+  });
+
+  let grossNum = 0;
+  let grossDen = 0;
+  let netNum = 0;
+  let netDen = 0;
+  let grnCount = 0;
+  const awaiting: Array<{
+    id: string;
+    channelPoNumber: string | null;
+    emailRef: string | null;
+    emailSentAt: Date | null;
+    channel: { name: string; logoColor: string | null };
+  }> = [];
+
+  for (const po of pos) {
+    if (po.grnRecord) {
+      grnCount++;
+      const fill = computeFillRates(po.lineItems, po.grnRecord.lineItems);
+      grossNum += fill.grossNum;
+      grossDen += fill.grossDen;
+      netNum += fill.netNum;
+      netDen += fill.netDen;
+    } else {
+      awaiting.push({
+        id: po.id,
+        channelPoNumber: po.channelPoNumber,
+        emailRef: po.emailRef,
+        emailSentAt: po.emailSentAt,
+        channel: po.channel,
+      });
+    }
+  }
+
+  const pct = (num: number, den: number): number | null =>
+    den > 0 ? Math.round((num / den) * 1000) / 10 : null;
+
+  return {
+    issuedCount: pos.length,
+    grnCount,
+    awaiting,
+    grossFillPct: pct(grossNum, grossDen),
+    netFillPct: netDen > 0 ? pct(netNum, netDen) : null,
+  };
+}
+
 export async function getOpenDiscrepancies() {
   return prisma.discrepancy.findMany({
     where: { status: { in: ["OPEN", "DISPUTED"] } },

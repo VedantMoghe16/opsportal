@@ -169,9 +169,30 @@ export async function ingestLiveZeptoPOs(
     }
 
     const externalId = `zepto:${poNo}`;
+    const headerOnly = !apiLines || apiLines.length === 0;
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Allocation latch: once a PO is allocated+, sync must not clobber it.
       const locked = (await poLockState(tx, externalId))?.locked ?? false;
+      // Header-only latch: when the items endpoint failed/timed out this run, the
+      // payload has no per-SKU lines (receivedQty=0). Rewriting an already-hydrated
+      // PO from it would delete real line items + GRN and regress the status, so
+      // preserve existing detail and only refresh the raw snapshot.
+      let preserveDetail = false;
+      if (headerOnly) {
+        const existing = await tx.purchaseOrder.findUnique({
+          where: { externalId },
+          select: {
+            grnRecord: { select: { id: true } },
+            lineItems: { select: { channelSkuCode: true }, take: 100 },
+          },
+        });
+        preserveDetail =
+          existing != null &&
+          (existing.grnRecord != null ||
+            existing.lineItems.some((l) => !(l.channelSkuCode ?? "").startsWith("ZEP-SUMM-")));
+        if (preserveDetail) warnings.push(`PO ${poNo}: header-only payload — kept existing line items/GRN.`);
+      }
+      const skipRewrite = locked || preserveDetail;
       const dbPo = await tx.purchaseOrder.upsert({
         where: { externalId },
         create: {
@@ -180,13 +201,13 @@ export async function ingestLiveZeptoPOs(
           rawData: po as Prisma.InputJsonValue, rawEmailSubject: `Zepto PO ${poNo}`,
           ...(poDate ? { createdAt: poDate } : {}),
         },
-        // Locked PO: only refresh the raw snapshot — keep status/qty/GRN/allocation.
-        update: locked
+        // Locked/preserved PO: only refresh the raw snapshot — keep status/qty/GRN/allocation.
+        update: skipRewrite
           ? { rawData: po as Prisma.InputJsonValue }
           : { channelPoNumber: poNo, status, poDate, requestedDeliveryDate: expiryDate, totalRequestedValue: totalValue, rawData: po as Prisma.InputJsonValue },
       });
 
-      if (!locked) {
+      if (!skipRewrite) {
         await tx.poLineItem.deleteMany({ where: { poId: dbPo.id } });
         for (const line of resolvedLines) {
           await tx.poLineItem.create({
@@ -226,7 +247,7 @@ export async function ingestLiveZeptoPOs(
       await writeAudit({
         tx, entityType: "PurchaseOrder", entityId: dbPo.id, action: "ZEPTO_IMPORTED",
         performedBy: actorLabel,
-        changes: { poNumber: poNo, lines: resolvedLines.length, totalValue, totalReceivedQty, status, locked },
+        changes: { poNumber: poNo, lines: resolvedLines.length, totalValue, totalReceivedQty, status, locked, preservedDetail: preserveDetail },
       });
     });
 

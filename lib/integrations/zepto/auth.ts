@@ -84,14 +84,24 @@ async function save(tokens: ZeptoTokens): Promise<void> {
  * 3. OTP login with the brands.zepto.co.in applicationId (d0cd4873)
  */
 export async function getTokens(forceRefresh = false): Promise<ZeptoTokens> {
+  const cached = await loadCached();
   if (!forceRefresh) {
-    const cached = await loadCached();
     if (cached?.accessToken) return cached;
+    // Fast-path: use the pre-captured portal token when OTP login isn't available.
+    if (env.ZEPTO_PORTAL_TOKEN) {
+      const tokens: ZeptoTokens = { accessToken: env.ZEPTO_PORTAL_TOKEN, tokenType: "" };
+      await save(tokens);
+      return tokens;
+    }
+    return login();
   }
-  // Fast-path: use the pre-captured portal token when OTP login isn't available.
-  if (env.ZEPTO_PORTAL_TOKEN) {
+  // forceRefresh: the current token was just rejected (401/403). Returning the same
+  // static env token again can never heal the session, so only use ZEPTO_PORTAL_TOKEN
+  // here when it differs from the rejected cached token (i.e. a freshly pasted one);
+  // otherwise mint a new session via OTP login.
+  if (env.ZEPTO_PORTAL_TOKEN && env.ZEPTO_PORTAL_TOKEN !== cached?.accessToken) {
     const tokens: ZeptoTokens = { accessToken: env.ZEPTO_PORTAL_TOKEN, tokenType: "" };
-    if (!forceRefresh) await save(tokens);
+    await save(tokens);
     return tokens;
   }
   return login();

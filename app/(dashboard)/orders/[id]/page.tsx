@@ -306,7 +306,7 @@ function EmailStatusBadge({ status, sentAt }: { status: string; sentAt: Date | n
     case "SENT":
       return (
         <span className="text-[11px] text-muted-foreground">
-          sent{sentAt ? ` ${formatDate(sentAt)}` : ""}
+          issued{sentAt ? ` ${formatDateTime(sentAt)} IST` : ""}
         </span>
       );
     case "HELD":

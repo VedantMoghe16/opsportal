@@ -33,8 +33,13 @@ export async function computeKpis(): Promise<Kpis> {
   const now = Date.now();
   const since = new Date(now - 30 * DAY);
 
+  // Window: POs created in the last 30 days, plus older POs whose GRN was
+  // received in the window — late receipts on old POs still belong in the
+  // fill-rate/GRN charts even though the PO itself predates the window.
   const pos = await prisma.purchaseOrder.findMany({
-    where: { createdAt: { gte: since } },
+    where: {
+      OR: [{ createdAt: { gte: since } }, { grnRecord: { receivedAt: { gte: since } } }],
+    },
     select: {
       createdAt: true,
       approvedAt: true,

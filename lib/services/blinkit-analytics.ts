@@ -51,6 +51,10 @@ export interface ChannelInsights {
   days: number;
   hasData: boolean;
   lastSyncedAt: Date | null;
+  /** Outcome of the most recent sync run (from the ChannelSync audit trail), so a
+   *  failing sync is distinguishable from "no new POs". Null for channels that
+   *  don't record sync outcomes yet. */
+  lastSyncAttempt: { at: Date; ok: boolean; error: string | null } | null;
   intervalHours: number;
   headers: string[];
   summary: {
@@ -254,10 +258,24 @@ export async function computeChannelInsights({
     select: { updatedAt: true },
   });
 
+  // Most recent recorded sync run (SYNC_OK / SYNC_FAILED) for this channel.
+  const lastSync = await prisma.auditLog.findFirst({
+    where: { entityType: "ChannelSync", entityId: source.toLowerCase() },
+    orderBy: { createdAt: "desc" },
+    select: { action: true, createdAt: true, changes: true },
+  });
+  const lastSyncError =
+    lastSync?.action === "SYNC_FAILED" && lastSync.changes && typeof lastSync.changes === "object"
+      ? String((lastSync.changes as Record<string, unknown>).error ?? "") || null
+      : null;
+
   return {
     days,
     hasData: pos.length > 0,
     lastSyncedAt: latest?.updatedAt ?? null,
+    lastSyncAttempt: lastSync
+      ? { at: lastSync.createdAt, ok: lastSync.action === "SYNC_OK", error: lastSyncError }
+      : null,
     intervalHours: intervalHoursFor(source),
     headers: [...headerSet],
     summary: {

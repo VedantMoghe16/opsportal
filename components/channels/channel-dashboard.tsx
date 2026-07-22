@@ -291,6 +291,19 @@ export function ChannelDashboard({
               </span>
             </>
           )}
+          {insights.lastSyncAttempt && !insights.lastSyncAttempt.ok && (
+            <>
+              {" · "}
+              <span
+                className="inline-flex items-center gap-1 text-destructive"
+                title={insights.lastSyncAttempt.error ?? undefined}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+                last sync failed {relativeTime(insights.lastSyncAttempt.at)}
+                {insights.lastSyncAttempt.error ? ` — ${insights.lastSyncAttempt.error.slice(0, 120)}` : ""}
+              </span>
+            </>
+          )}
         </p>
         {controls}
       </div>
