@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { writeAudit } from "@/lib/services/audit";
-import { poLockState } from "@/lib/services/ingest-guard";
+import { poLockState, captureLockedPoGrn } from "@/lib/services/ingest-guard";
 import type { ParsedSheet } from "@/lib/integrations/blinkit/parse";
 import { resolveFields, toNumber, toDate, type FieldMap } from "@/lib/integrations/blinkit/fields";
 
@@ -237,6 +237,17 @@ export async function ingestBlinkitDump(
             },
           });
         }
+      } else {
+        // Locked (allocated+) POs keep their allocation, but channel receipts are
+        // new info that must still land — otherwise issued POs never show a GRN.
+        await captureLockedPoGrn(tx, {
+          poId: po.id,
+          grnLines: lineData
+            .filter((l) => l.received > 0)
+            .map((l) => ({ skuId: l.line.skuId, receivedQty: l.received })),
+          allReceived,
+          receivedAt: deliveryDate ?? poDate,
+        });
       }
 
       await writeAudit({

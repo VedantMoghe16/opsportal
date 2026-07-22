@@ -22,7 +22,17 @@ export default async function GrnPage() {
       <main className="flex-1 space-y-6 px-5 py-6 lg:px-8">
         {/* GRN follow-up on POs issued from this portal: received vs still awaiting. */}
         <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-          <StatCard label="POs issued" value={String(issued.issuedCount)} icon={Send} accent="lav" hint="PO emails sent from this portal" />
+          <StatCard
+            label="POs issued"
+            value={String(issued.issuedCount)}
+            icon={Send}
+            accent="lav"
+            hint={
+              issued.undeliveredCount > 0
+                ? `PO emails delivered · +${issued.undeliveredCount} attempted but not delivered`
+                : "PO emails sent from this portal"
+            }
+          />
           <StatCard
             label="GRN received"
             value={`${issued.grnCount} of ${issued.issuedCount}`}

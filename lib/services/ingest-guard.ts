@@ -40,3 +40,67 @@ export async function poLockState(
   if (!existing) return null;
   return { id: existing.id, locked: isAllocationLocked(existing.status) };
 }
+
+// Once receipts land, a locked PO may advance to GRN_RECEIVED/CLOSED — but never
+// out of ops-owned exception states (ON_HOLD, DISCREPANCY) or a manual CLOSED.
+const GRN_ADVANCEABLE_STATUSES = new Set<string>([
+  "ALLOCATED",
+  "APPROVED",
+  "DISPATCHED",
+  "DELIVERED",
+  "GRN_RECEIVED",
+]);
+
+/**
+ * Record channel-reported GRN receipts on an allocation-locked PO.
+ *
+ * The allocation latch rightly stops sync from rewriting line items (approvedQty)
+ * and workflow status — but GRN receipts are NEW information that arrives from the
+ * channel *after* allocation, on exactly the POs we issued. Skipping them meant no
+ * issued PO ever showed a GRN. This captures receipts without touching allocation:
+ *  - no-op when the payload carries no received quantities (header-only fetches
+ *    must never erase previously captured receipts)
+ *  - never overwrites a human-entered GRN (EMAIL / MANUAL_CSV)
+ *  - refreshes the PORTAL GRN idempotently, then advances status only along the
+ *    normal path (→ GRN_RECEIVED, or CLOSED when fully received)
+ */
+export async function captureLockedPoGrn(
+  tx: Prisma.TransactionClient,
+  args: {
+    poId: string;
+    grnLines: { skuId: string; receivedQty: number }[];
+    allReceived: boolean;
+    receivedAt?: Date | null;
+  },
+): Promise<boolean> {
+  if (args.grnLines.length === 0) return false;
+  const existing = await tx.grnRecord.findUnique({
+    where: { poId: args.poId },
+    select: { source: true },
+  });
+  if (existing && existing.source !== "PORTAL") return false;
+
+  await tx.discrepancy.deleteMany({ where: { poId: args.poId } });
+  await tx.grnRecord.deleteMany({ where: { poId: args.poId } });
+  await tx.grnRecord.create({
+    data: {
+      poId: args.poId,
+      source: "PORTAL",
+      channelGrnNumber: null,
+      status: args.allReceived ? "ACCEPTED" : "PENDING_RECONCILIATION",
+      receivedAt: args.receivedAt ?? undefined,
+      lineItems: {
+        create: args.grnLines.map((l) => ({ skuId: l.skuId, receivedQty: l.receivedQty, rejectedQty: 0 })),
+      },
+    },
+  });
+
+  const po = await tx.purchaseOrder.findUnique({ where: { id: args.poId }, select: { status: true } });
+  if (po && GRN_ADVANCEABLE_STATUSES.has(po.status)) {
+    const next = args.allReceived ? "CLOSED" : "GRN_RECEIVED";
+    if (next !== po.status) {
+      await tx.purchaseOrder.update({ where: { id: args.poId }, data: { status: next } });
+    }
+  }
+  return true;
+}

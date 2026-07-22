@@ -384,7 +384,9 @@ export async function getGrns() {
  */
 export async function getIssuedPoGrnStatus() {
   const pos = await prisma.purchaseOrder.findMany({
-    where: { emailStatus: "SENT" },
+    // "Issued" = the PO email actually went out. emailSentAt covers POs sent
+    // before the emailStatus field existed (those rows still say NOT_SENT).
+    where: { OR: [{ emailStatus: "SENT" }, { emailSentAt: { not: null } }] },
     orderBy: { emailSentAt: "desc" },
     select: {
       id: true,
@@ -434,8 +436,15 @@ export async function getIssuedPoGrnStatus() {
   const pct = (num: number, den: number): number | null =>
     den > 0 ? Math.round((num / den) * 1000) / 10 : null;
 
+  // Refs issued whose email never got delivered (HELD/FAILED or legacy) — shown
+  // as a hint so the issued count reconciles against the email-ref counter.
+  const undeliveredCount = await prisma.purchaseOrder.count({
+    where: { emailRef: { not: null }, emailSentAt: null },
+  });
+
   return {
     issuedCount: pos.length,
+    undeliveredCount,
     grnCount,
     awaiting,
     grossFillPct: pct(grossNum, grossDen),
