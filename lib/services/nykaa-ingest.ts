@@ -32,7 +32,10 @@ function mapNykaaStatus(status: string, totalReceivedQty: number, totalQty: numb
     return "GRN_RECEIVED";
   }
   if (s.includes("dispatch") || s.includes("shipped") || s.includes("intransit") || s.includes("in_transit")) return "DISPATCHED";
-  if (s.includes("approved") || s.includes("confirmed") || s.includes("acknowledged")) return "APPROVED";
+  // Channel-side "approved/confirmed" is Nykaa's own commercial approval of a fresh
+  // PO — NOT our allocation approval. Mapping it to APPROVED faked "Allocated" in
+  // the UI, hid the PO from the allocation queue, and allocation-locked it. Such
+  // POs still need our review, so they stay PENDING_REVIEW (fall through).
   if (s.includes("complet") || s.includes("delivered") || s === "grn_received") return "GRN_RECEIVED";
   return "PENDING_REVIEW";
 }

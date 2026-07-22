@@ -35,10 +35,16 @@ export async function poLockState(
 ): Promise<{ id: string; locked: boolean } | null> {
   const existing = await tx.purchaseOrder.findUnique({
     where: { externalId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, approvedAt: true, emailRef: true, claimedById: true },
   });
   if (!existing) return null;
-  return { id: existing.id, locked: isAllocationLocked(existing.status) };
+  // Self-heal: older syncs mapped the channel's own "approved" status onto our
+  // APPROVED workflow state, locking POs nobody ever allocated. An APPROVED PO
+  // with no human fingerprints (no approval timestamp, no email ref, unclaimed)
+  // is such an artifact — let sync refresh it fully so its status is recomputed.
+  const syntheticApproved =
+    existing.status === "APPROVED" && !existing.approvedAt && !existing.emailRef && !existing.claimedById;
+  return { id: existing.id, locked: isAllocationLocked(existing.status) && !syntheticApproved };
 }
 
 // Once receipts land, a locked PO may advance to GRN_RECEIVED/CLOSED — but never
