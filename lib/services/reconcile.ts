@@ -6,13 +6,17 @@ import { sendEmail } from "@/lib/integrations/resend";
 import { uploadToS3 } from "@/lib/integrations/s3";
 import { generateInvoicePdf } from "@/lib/integrations/pdf";
 import { writeAudit } from "@/lib/services/audit";
+import { computeGrnVariances } from "@/lib/services/grn-variance";
 import { formatINR } from "@/lib/utils";
 
-const TOLERANCE_PCT = 2.0;
-
 /**
- * Diff a GRN's received quantities against what was dispatched.
+ * Diff a GRN's received quantities against the best available baseline
+ * (dispatched → assigned/ASN → ordered; see lib/services/grn-variance.ts).
  * Within tolerance → accept + auto-invoice. Otherwise → flag discrepancies.
+ *
+ * Idempotent per GRN: a re-run (re-sync, replayed email) never creates
+ * duplicate rows and never flips statuses on a GRN that was already
+ * reconciled or manually resolved.
  */
 export async function reconcileGrn(grnId: string): Promise<{
   hasDiscrepancy: boolean;
@@ -25,6 +29,7 @@ export async function reconcileGrn(grnId: string): Promise<{
       po: {
         include: {
           channel: true,
+          lineItems: true,
           dispatchRecord: { include: { lineItems: true } },
         },
       },
@@ -32,34 +37,64 @@ export async function reconcileGrn(grnId: string): Promise<{
   });
   if (!grn) throw new Error(`GRN ${grnId} not found`);
 
-  let hasDiscrepancy = false;
-  let discrepancyCount = 0;
+  // Re-run guard: a GRN that already left PENDING_RECONCILIATION (accepted,
+  // flagged, or manually resolved) is never re-diffed or status-flipped.
+  if (grn.status !== "PENDING_RECONCILIATION") {
+    const openCount = await prisma.discrepancy.count({
+      where: { grnId, status: { in: ["OPEN", "DISPUTED"] } },
+    });
+    return { hasDiscrepancy: openCount > 0, discrepancyCount: openCount };
+  }
 
-  for (const grnLine of grn.lineItems) {
-    const dispatched = grn.po.dispatchRecord?.lineItems.find(
-      (d) => d.skuId === grnLine.skuId,
+  // Still pending but rows already exist → a previous run crashed between
+  // creating rows and updating statuses. Skip creation, finish the status leg.
+  const existingCount = await prisma.discrepancy.count({ where: { grnId } });
+
+  let hasDiscrepancy: boolean;
+  let discrepancyCount: number;
+
+  if (existingCount > 0) {
+    discrepancyCount = await prisma.discrepancy.count({
+      where: { grnId, status: { in: ["OPEN", "DISPUTED"] } },
+    });
+    hasDiscrepancy = discrepancyCount > 0;
+  } else {
+    const result = computeGrnVariances(
+      grn.po.lineItems.map((l) => ({
+        skuId: l.skuId,
+        requestedQty: l.requestedQty,
+        approvedQty: l.approvedQty,
+        unitPrice: l.unitPrice,
+        rawData: l.rawData,
+      })),
+      grn.lineItems.map((l) => ({
+        skuId: l.skuId,
+        receivedQty: l.receivedQty,
+        rejectedQty: l.rejectedQty,
+        rejectionReason: l.rejectionReason,
+      })),
+      grn.po.dispatchRecord?.lineItems,
     );
-    if (!dispatched) continue;
+    hasDiscrepancy = result.hasDiscrepancy;
+    discrepancyCount = result.rows.length;
 
-    const varianceQty = dispatched.dispatchedQty - grnLine.receivedQty;
-    const variancePct =
-      dispatched.dispatchedQty === 0
-        ? 0
-        : Math.abs(varianceQty / dispatched.dispatchedQty) * 100;
-
-    if (variancePct > TOLERANCE_PCT) {
-      hasDiscrepancy = true;
-      discrepancyCount++;
-      await prisma.discrepancy.create({
-        data: {
+    if (result.rows.length > 0) {
+      await prisma.discrepancy.createMany({
+        data: result.rows.map((r) => ({
           poId: grn.poId,
           grnId,
-          skuId: grnLine.skuId,
-          dispatchedQty: dispatched.dispatchedQty,
-          receivedQty: grnLine.receivedQty,
-          varianceQty,
-          variancePct,
-        },
+          skuId: r.skuId,
+          // dispatchedQty mirrors baselineQty for legacy consumers (debit notes, exports)
+          dispatchedQty: r.baselineQty,
+          receivedQty: r.receivedQty,
+          varianceQty: r.varianceQty,
+          variancePct: r.variancePct,
+          type: r.type,
+          baseline: r.baseline,
+          baselineQty: r.baselineQty,
+          valueImpact: r.valueImpact,
+          rejectionReason: r.rejectionReason,
+        })),
       });
     }
   }

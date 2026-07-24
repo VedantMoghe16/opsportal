@@ -396,10 +396,16 @@ model Discrepancy {
   poId            String
   grnId           String
   skuId           String
-  dispatchedQty   Int
+  dispatchedQty   Int // kept in sync with baselineQty for legacy consumers (debit notes, exports)
   receivedQty     Int
   varianceQty     Int // dispatchedQty - receivedQty
   variancePct     Float
+  type            DiscrepancyType     @default(SHORT_RECEIPT)
+  baseline        DiscrepancyBaseline? // null on rows created before baseline tracking
+  baselineQty     Int?
+  valueImpact     Float? // |varianceQty| × unit price; null when no price known
+  origin          DiscrepancyOrigin   @default(LIVE)
+  rejectionReason String?
   status          DiscrepancyStatus @default(OPEN)
   resolutionNotes String?
   resolvedBy      String?
@@ -419,6 +425,24 @@ enum DiscrepancyStatus {
   DEBIT_NOTE_RAISED
   DISPUTED
   RESOLVED
+}
+
+enum DiscrepancyType {
+  SHORT_RECEIPT // baseline > received — units lost in transit or under-counted by the channel
+  EXCESS_RECEIPT // received > baseline — invoice mismatch risk
+  CHANNEL_REJECTION // channel rejected units at the dock (quality / expiry / damage)
+}
+
+/** Which quantity the GRN was reconciled against, in order of confidence. */
+enum DiscrepancyBaseline {
+  DISPATCHED
+  ASSIGNED
+  ORDERED
+}
+
+enum DiscrepancyOrigin {
+  LIVE // flagged by reconcileGrn when the GRN arrived
+  BACKFILL // created retroactively by scripts/backfill-discrepancies.ts
 }
 
 model Invoice {

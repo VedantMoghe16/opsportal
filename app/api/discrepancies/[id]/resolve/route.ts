@@ -44,10 +44,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         data: { status: "DISPUTED", resolvedBy: actor.label, resolutionNotes: notes },
       });
     } else if (action === "debit_note") {
+      if (disc.type === "EXCESS_RECEIPT" || disc.varianceQty <= 0) {
+        return fail(new Error("Debit notes only apply to shortages and rejections"), 400);
+      }
       const rate = disc.sku.gstRate; // for reference
       const unitPrice =
         (await prisma.poLineItem.findFirst({ where: { poId: po.id, skuId: disc.skuId } }))?.unitPrice ??
         0;
+      // The PDF bills (dispatched − received) per line. Feed it quantities that
+      // net to THIS row's varianceQty so a rejection row bills only the rejected
+      // units, never the sibling shortage row's units too.
       const { buffer, totalShortage } = await generateDebitNotePdf({
         debitNoteNumber: `DN-${new Date().getFullYear()}-${disc.id.slice(-4).toUpperCase()}`,
         date: new Date(),
@@ -61,7 +67,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           {
             internalCode: disc.sku.internalCode,
             name: disc.sku.name,
-            dispatchedQty: disc.dispatchedQty,
+            dispatchedQty: disc.receivedQty + disc.varianceQty,
             receivedQty: disc.receivedQty,
             rate: unitPrice,
           },
