@@ -1,4 +1,10 @@
-import type { PoStatus, GrnStatus, DiscrepancyStatus } from "@prisma/client";
+import type {
+  PoStatus,
+  GrnStatus,
+  DiscrepancyStatus,
+  DiscrepancyType,
+  DiscrepancyBaseline,
+} from "@prisma/client";
 import type { BadgeProps } from "@/components/ui/badge";
 
 type Variant = NonNullable<BadgeProps["variant"]>;
@@ -48,6 +54,22 @@ export const DISCREPANCY_STATUS_META: Record<
   DEBIT_NOTE_RAISED: { label: "Debit note", variant: "purple" },
   DISPUTED: { label: "Disputed", variant: "info" },
   RESOLVED: { label: "Resolved", variant: "success" },
+};
+
+export const DISCREPANCY_TYPE_META: Record<
+  DiscrepancyType,
+  { label: string; variant: Variant }
+> = {
+  SHORT_RECEIPT: { label: "Short receipt", variant: "danger" },
+  EXCESS_RECEIPT: { label: "Excess", variant: "warning" },
+  CHANNEL_REJECTION: { label: "Rejected", variant: "purple" },
+};
+
+/** Which quantity the GRN was diffed against — shown as a hint under the expected qty. */
+export const DISCREPANCY_BASELINE_LABEL: Record<DiscrepancyBaseline, string> = {
+  DISPATCHED: "vs dispatched",
+  ASSIGNED: "vs assigned",
+  ORDERED: "vs ordered",
 };
 
 export const PRIORITY_META: Record<string, { label: string; variant: Variant }> = {

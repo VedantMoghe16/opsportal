@@ -452,25 +452,203 @@ export async function getIssuedPoGrnStatus() {
   };
 }
 
+const DISCREPANCY_INCLUDE = {
+  sku: true,
+  grnRecord: {
+    select: {
+      id: true,
+      channelGrnNumber: true,
+      po: {
+        select: {
+          id: true,
+          channelPoNumber: true,
+          channel: { select: { name: true, logoColor: true } },
+        },
+      },
+    },
+  },
+} as const;
+
 export async function getOpenDiscrepancies() {
   return prisma.discrepancy.findMany({
     where: { status: { in: ["OPEN", "DISPUTED"] } },
     orderBy: { createdAt: "asc" },
-    include: {
-      sku: true,
+    include: DISCREPANCY_INCLUDE,
+  });
+}
+
+/** Resolved history for the Reconciliation page (most recent first). */
+export async function getResolvedDiscrepancies(limit = 100) {
+  return prisma.discrepancy.findMany({
+    where: { status: { in: ["ACCEPTED", "DEBIT_NOTE_RAISED", "RESOLVED"] } },
+    orderBy: [{ resolvedAt: "desc" }, { createdAt: "desc" }],
+    take: limit,
+    include: DISCREPANCY_INCLUDE,
+  });
+}
+
+/** ₹ headline numbers for the Reconciliation page. */
+export async function getReconciliationSummary() {
+  const IST_OFFSET_MS = 5.5 * 3_600_000;
+  const istNow = new Date(Date.now() + IST_OFFSET_MS);
+  const monthStart = new Date(
+    Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), 1) - IST_OFFSET_MS,
+  );
+
+  const [open, disputed, debitNoted, writtenOff] = await Promise.all([
+    prisma.discrepancy.aggregate({
+      where: { status: "OPEN" },
+      _sum: { valueImpact: true },
+      _count: true,
+    }),
+    prisma.discrepancy.aggregate({
+      where: { status: "DISPUTED" },
+      _sum: { valueImpact: true },
+      _count: true,
+    }),
+    prisma.discrepancy.aggregate({
+      where: { status: "DEBIT_NOTE_RAISED", resolvedAt: { gte: monthStart } },
+      _sum: { valueImpact: true },
+      _count: true,
+    }),
+    prisma.discrepancy.aggregate({
+      where: { status: "ACCEPTED", resolvedAt: { gte: monthStart } },
+      _sum: { valueImpact: true },
+      _count: true,
+    }),
+  ]);
+
+  const sum = (a: { _sum: { valueImpact: number | null } }) => a._sum.valueImpact ?? 0;
+  return {
+    openValue: sum(open),
+    openCount: open._count,
+    disputedValue: sum(disputed),
+    disputedCount: disputed._count,
+    debitNotedValue: sum(debitNoted),
+    debitNotedCount: debitNoted._count,
+    writtenOffValue: sum(writtenOff),
+    writtenOffCount: writtenOff._count,
+  };
+}
+
+/**
+ * Tie-out between the Analytics fill-rate gap and Reconciliation (last 30d):
+ * of the units ordered-but-not-received, how many are captured as discrepancy
+ * rows and how many are unexplained. When `unexplainedUnits` is large, the
+ * two screens are disagreeing silently — usually GRNs that predate the
+ * baseline fix (run scripts/backfill-discrepancies.ts).
+ */
+export async function getVarianceTieOut() {
+  const since = new Date(Date.now() - 30 * DAY);
+  const pos = await prisma.purchaseOrder.findMany({
+    where: { grnRecord: { receivedAt: { gte: since } } },
+    select: {
+      lineItems: {
+        select: { skuId: true, requestedQty: true, approvedQty: true, unitPrice: true, rawData: true },
+      },
       grnRecord: {
-        select: {
-          id: true,
-          channelGrnNumber: true,
-          po: {
-            select: {
-              id: true,
-              channelPoNumber: true,
-              channel: { select: { name: true, logoColor: true } },
-            },
-          },
-        },
+        select: { id: true, lineItems: { select: { skuId: true, receivedQty: true } } },
       },
     },
   });
+
+  let gapUnits = 0;
+  let gapValue = 0;
+  const grnIds: string[] = [];
+  for (const po of pos) {
+    if (!po.grnRecord) continue;
+    grnIds.push(po.grnRecord.id);
+    const fill = computeFillRates(po.lineItems, po.grnRecord.lineItems);
+    const priceBySku = new Map(po.lineItems.map((l) => [l.skuId, l.unitPrice ?? 0]));
+    for (const line of fill.perLine) {
+      const short = Math.max(0, line.ordered - line.received);
+      gapUnits += short;
+      gapValue += short * (priceBySku.get(line.skuId) ?? 0);
+    }
+  }
+
+  // Shortage-side discrepancy rows on those same GRNs (any status/origin).
+  const explained = await prisma.discrepancy.aggregate({
+    where: { grnId: { in: grnIds }, type: { in: ["SHORT_RECEIPT", "CHANNEL_REJECTION"] } },
+    _sum: { varianceQty: true },
+  });
+  const explainedUnits = Math.max(0, explained._sum.varianceQty ?? 0);
+
+  return {
+    windowDays: 30,
+    gapUnits,
+    gapValue,
+    explainedUnits,
+    unexplainedUnits: Math.max(0, gapUnits - explainedUnits),
+  };
+}
+
+/**
+ * Internal short-ship (last 30d): GRN'd POs where what we committed
+ * (allocation/ASN) fell short of the channel's ask beyond tolerance. This is
+ * our own warehouse/stock problem — informational, no channel dispute — so it
+ * is derived here rather than persisted as Discrepancy rows.
+ */
+export async function getInternalShortShip() {
+  const since = new Date(Date.now() - 30 * DAY);
+  const TOLERANCE_PCT = 2.0;
+  const pos = await prisma.purchaseOrder.findMany({
+    where: { grnRecord: { receivedAt: { gte: since } } },
+    select: {
+      id: true,
+      channelPoNumber: true,
+      channel: { select: { name: true, logoColor: true } },
+      lineItems: {
+        select: {
+          skuId: true,
+          requestedQty: true,
+          approvedQty: true,
+          unitPrice: true,
+          rawData: true,
+          sku: { select: { internalCode: true, name: true } },
+        },
+      },
+      grnRecord: { select: { receivedAt: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const rows: Array<{
+    poId: string;
+    channelPoNumber: string | null;
+    channel: { name: string; logoColor: string | null };
+    skuCode: string;
+    skuName: string;
+    ordered: number;
+    committed: number;
+    gapQty: number;
+    gapValue: number | null;
+    receivedAt: Date | null;
+  }> = [];
+
+  for (const po of pos) {
+    const fill = computeFillRates(po.lineItems, null);
+    const bySku = new Map(po.lineItems.map((l) => [l.skuId, l]));
+    for (const line of fill.perLine) {
+      if (line.assigned == null || line.ordered === 0) continue;
+      const gap = line.ordered - line.assigned;
+      if (gap <= 0 || (gap / line.ordered) * 100 <= TOLERANCE_PCT) continue;
+      const li = bySku.get(line.skuId);
+      rows.push({
+        poId: po.id,
+        channelPoNumber: po.channelPoNumber,
+        channel: po.channel,
+        skuCode: li?.sku.internalCode ?? line.skuId,
+        skuName: li?.sku.name ?? "",
+        ordered: line.ordered,
+        committed: line.assigned,
+        gapQty: gap,
+        gapValue: li?.unitPrice != null ? Math.round(gap * li.unitPrice * 100) / 100 : null,
+        receivedAt: po.grnRecord?.receivedAt ?? null,
+      });
+    }
+  }
+
+  rows.sort((a, b) => (b.gapValue ?? 0) - (a.gapValue ?? 0));
+  return rows;
 }
