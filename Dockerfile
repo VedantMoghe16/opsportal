@@ -40,6 +40,12 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/prisma ./prisma
+# Ops scripts (scripts/*.ts run via `docker exec … npx tsx`) + the lib/ modules
+# they import and the tsconfig that resolves the `@/` path alias.
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/types ./types
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Ensure the Chromium revision matches the installed playwright package, and make
 # the entrypoint executable.
