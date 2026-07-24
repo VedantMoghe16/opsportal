@@ -17,11 +17,21 @@ import { formatINR } from "@/lib/utils";
  * Idempotent per GRN: a re-run (re-sync, replayed email) never creates
  * duplicate rows and never flips statuses on a GRN that was already
  * reconciled or manually resolved.
+ *
+ * opts (default true/true — existing callers unchanged):
+ *  - autoInvoice: invoice + email the channel when the GRN is clean. The
+ *    deferred cron pass sets false so a historical backlog never mass-emails.
+ *  - notify: WhatsApp alert on flag. The deferred pass sets false and sends
+ *    one digest instead of one ping per GRN.
  */
-export async function reconcileGrn(grnId: string): Promise<{
+export async function reconcileGrn(
+  grnId: string,
+  opts: { autoInvoice?: boolean; notify?: boolean } = {},
+): Promise<{
   hasDiscrepancy: boolean;
   discrepancyCount: number;
 }> {
+  const { autoInvoice = true, notify = true } = opts;
   const grn = await prisma.grnRecord.findUnique({
     where: { id: grnId },
     include: {
@@ -115,15 +125,21 @@ export async function reconcileGrn(grnId: string): Promise<{
       performedBy: "system",
       changes: { discrepancyCount },
     });
-    await sendWhatsAppAlert(
-      `⚠️ GRN discrepancy on PO ${grn.po.channelPoNumber} (${grn.po.channel.name}). ` +
-        `Review at ${env.NEXT_PUBLIC_APP_URL}/reconciliation`,
-    );
+    if (notify) {
+      await sendWhatsAppAlert(
+        `⚠️ GRN discrepancy on PO ${grn.po.channelPoNumber} (${grn.po.channel.name}). ` +
+          `Review at ${env.NEXT_PUBLIC_APP_URL}/reconciliation`,
+      );
+    }
   } else {
-    await prisma.purchaseOrder.update({
-      where: { id: grn.poId },
-      data: { status: "GRN_RECEIVED" },
-    });
+    // Never downgrade a PO the sync/ops already closed — matters for the
+    // deferred pass, where autoInvoice=false means nothing would re-close it.
+    if (grn.po.status !== "CLOSED") {
+      await prisma.purchaseOrder.update({
+        where: { id: grn.poId },
+        data: { status: "GRN_RECEIVED" },
+      });
+    }
     await prisma.grnRecord.update({
       where: { id: grnId },
       data: { status: "ACCEPTED", reconciledAt: new Date() },
@@ -134,7 +150,7 @@ export async function reconcileGrn(grnId: string): Promise<{
       action: "GRN_ACCEPTED",
       performedBy: "system",
     });
-    await generateAndSendInvoice(grn.poId, grnId);
+    if (autoInvoice) await generateAndSendInvoice(grn.poId, grnId);
   }
 
   return { hasDiscrepancy, discrepancyCount };

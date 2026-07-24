@@ -1,10 +1,16 @@
 /**
- * Retroactively surface GRN variances that the old reconcile logic silently
- * auto-accepted (it skipped every line without a DispatchRecord baseline).
+ * Retroactively surface GRN variances that never went through reconciliation:
+ *  - ACCEPTED GRNs the old reconcile logic silently auto-accepted (it skipped
+ *    every line without a DispatchRecord baseline), and
+ *  - PENDING_RECONCILIATION GRNs from channel syncs, which never call
+ *    reconcileGrn at all — that's where the fill-rate gap actually lives.
+ *    Only settled ones (receivedAt older than 3 days) are scanned, so POs
+ *    still receiving aren't flagged mid-delivery.
  *
- * For each ACCEPTED GRN with zero discrepancy rows, re-runs the shared
- * variance engine (dispatched → assigned → ordered baseline) and creates
- * Discrepancy rows with origin=BACKFILL, status=OPEN.
+ * For each such GRN with zero discrepancy rows, re-runs the shared variance
+ * engine (dispatched → assigned → ordered baseline) and creates Discrepancy
+ * rows with origin=BACKFILL, status=OPEN. The check-timers cron later
+ * completes the status leg for pending GRNs (quiet mode — no invoices/pings).
  *
  * NON-DESTRUCTIVE by design:
  *   • never changes GrnRecord.status, PurchaseOrder.status, or invoices —
@@ -24,8 +30,15 @@ const prisma = new PrismaClient();
 const APPLY = process.argv.includes("--apply");
 
 async function main() {
+  const settledCutoff = new Date(Date.now() - 3 * 86_400_000);
   const grns = await prisma.grnRecord.findMany({
-    where: { status: "ACCEPTED", discrepancies: { none: {} } },
+    where: {
+      discrepancies: { none: {} },
+      OR: [
+        { status: "ACCEPTED" },
+        { status: "PENDING_RECONCILIATION", receivedAt: { lt: settledCutoff } },
+      ],
+    },
     include: {
       lineItems: true,
       po: {
@@ -39,7 +52,7 @@ async function main() {
     orderBy: { receivedAt: "asc" },
   });
 
-  console.log(`${APPLY ? "APPLY" : "DRY RUN"} — scanning ${grns.length} auto-accepted GRNs with no discrepancy rows\n`);
+  console.log(`${APPLY ? "APPLY" : "DRY RUN"} — scanning ${grns.length} unreconciled GRNs (auto-accepted + settled pending) with no discrepancy rows\n`);
 
   let flaggedGrns = 0;
   let totalRows = 0;

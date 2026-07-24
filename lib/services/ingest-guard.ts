@@ -58,6 +58,35 @@ const GRN_ADVANCEABLE_STATUSES = new Set<string>([
 ]);
 
 /**
+ * Delete a PO's PORTAL GRN (and any discrepancy rows) ahead of a sync rewrite —
+ * the reconciliation counterpart of the allocation latch.
+ *
+ * Returns false, touching NOTHING, when the GRN is ops-owned:
+ *  - human-entered (EMAIL / MANUAL_CSV), or
+ *  - already reconciled (auto-accepted, flagged, or manually resolved), or
+ *  - carrying discrepancy rows (live or backfilled) — resolved work and open
+ *    debit-note candidates must never be wiped by a re-sync.
+ * Callers must skip their GRN re-create when this returns false.
+ */
+export async function resetPortalGrn(
+  tx: Prisma.TransactionClient,
+  poId: string,
+): Promise<boolean> {
+  const existing = await tx.grnRecord.findUnique({
+    where: { poId },
+    select: { source: true, status: true },
+  });
+  if (existing) {
+    if (existing.source !== "PORTAL") return false;
+    if (existing.status !== "PENDING_RECONCILIATION") return false;
+    if ((await tx.discrepancy.count({ where: { poId } })) > 0) return false;
+  }
+  await tx.discrepancy.deleteMany({ where: { poId } });
+  await tx.grnRecord.deleteMany({ where: { poId } });
+  return true;
+}
+
+/**
  * Record channel-reported GRN receipts on an allocation-locked PO.
  *
  * The allocation latch rightly stops sync from rewriting line items (approvedQty)
@@ -66,7 +95,8 @@ const GRN_ADVANCEABLE_STATUSES = new Set<string>([
  * issued PO ever showed a GRN. This captures receipts without touching allocation:
  *  - no-op when the payload carries no received quantities (header-only fetches
  *    must never erase previously captured receipts)
- *  - never overwrites a human-entered GRN (EMAIL / MANUAL_CSV)
+ *  - never overwrites a human-entered GRN (EMAIL / MANUAL_CSV) or a reconciled/
+ *    flagged one (see resetPortalGrn)
  *  - refreshes the PORTAL GRN idempotently, then advances status only along the
  *    normal path (→ GRN_RECEIVED, or CLOSED when fully received)
  */
@@ -80,14 +110,8 @@ export async function captureLockedPoGrn(
   },
 ): Promise<boolean> {
   if (args.grnLines.length === 0) return false;
-  const existing = await tx.grnRecord.findUnique({
-    where: { poId: args.poId },
-    select: { source: true },
-  });
-  if (existing && existing.source !== "PORTAL") return false;
+  if (!(await resetPortalGrn(tx, args.poId))) return false;
 
-  await tx.discrepancy.deleteMany({ where: { poId: args.poId } });
-  await tx.grnRecord.deleteMany({ where: { poId: args.poId } });
   await tx.grnRecord.create({
     data: {
       poId: args.poId,

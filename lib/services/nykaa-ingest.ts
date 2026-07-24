@@ -2,7 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { writeAudit } from "@/lib/services/audit";
-import { poLockState, captureLockedPoGrn } from "@/lib/services/ingest-guard";
+import { poLockState, captureLockedPoGrn, resetPortalGrn } from "@/lib/services/ingest-guard";
 
 export interface IngestSummary {
   source: "nykaa";
@@ -245,10 +245,10 @@ export async function ingestLiveNykaaPOs(
           });
         }
 
-        await tx.discrepancy.deleteMany({ where: { poId: dbPo.id } });
-        await tx.grnRecord.deleteMany({ where: { poId: dbPo.id } });
+        // Refresh the PORTAL GRN unless it's finalized/flagged (see resetPortalGrn).
+        const grnRewritable = await resetPortalGrn(tx, dbPo.id);
         const grnLines = resolvedLines.filter((l) => l.receivedQty > 0);
-        if (grnLines.length > 0) {
+        if (grnRewritable && grnLines.length > 0) {
           const allReceived = totalReceivedQty >= totalQty && totalQty > 0;
           await tx.grnRecord.create({
             data: {

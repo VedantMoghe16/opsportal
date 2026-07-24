@@ -2,7 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { writeAudit } from "@/lib/services/audit";
-import { poLockState, captureLockedPoGrn } from "@/lib/services/ingest-guard";
+import { poLockState, captureLockedPoGrn, resetPortalGrn } from "@/lib/services/ingest-guard";
 import type { ParsedSheet } from "@/lib/integrations/blinkit/parse";
 import { resolveFields, toNumber, toDate, type FieldMap } from "@/lib/integrations/blinkit/fields";
 
@@ -225,10 +225,10 @@ export async function ingestLiveZeptoPOs(
           });
         }
 
-        await tx.discrepancy.deleteMany({ where: { poId: dbPo.id } });
-        await tx.grnRecord.deleteMany({ where: { poId: dbPo.id } });
+        // Refresh the PORTAL GRN unless it's finalized/flagged (see resetPortalGrn).
+        const grnRewritable = await resetPortalGrn(tx, dbPo.id);
         const grnLines = resolvedLines.filter((l) => l.receivedQty > 0);
-        if (grnLines.length > 0) {
+        if (grnRewritable && grnLines.length > 0) {
           const allReceived = totalReceivedQty >= totalQty && totalQty > 0;
           await tx.grnRecord.create({
             data: {
@@ -463,10 +463,9 @@ export async function ingestZeptoDump(
           await tx.poLineItem.create({ data: { ...line, poId: po.id } });
         }
 
-        // Replace GRN (received quantities), stored as a PORTAL GRN.
-        await tx.discrepancy.deleteMany({ where: { poId: po.id } });
-        await tx.grnRecord.deleteMany({ where: { poId: po.id } });
-        if (hasGrn) {
+        // Replace GRN (received quantities), stored as a PORTAL GRN — unless
+        // it's finalized/flagged (see resetPortalGrn).
+        if ((await resetPortalGrn(tx, po.id)) && hasGrn) {
           await tx.grnRecord.create({
             data: {
               poId: po.id,

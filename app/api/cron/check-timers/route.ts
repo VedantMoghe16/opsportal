@@ -5,6 +5,7 @@ import { env } from "@/lib/env";
 import { sendEmail, grnReminderEmail } from "@/lib/integrations/resend";
 import { sendWhatsAppAlert } from "@/lib/integrations/twilio";
 import { writeAudit } from "@/lib/services/audit";
+import { reconcileGrn } from "@/lib/services/reconcile";
 import { businessDaysBetween, formatDate, formatINR } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,13 @@ export async function GET(req: NextRequest) {
   console.log("[cron:check-timers] starting");
   try {
     const now = new Date();
-    const summary = { grnReminders: 0, escalations: 0, digestSent: false };
+    const summary = {
+      grnReminders: 0,
+      escalations: 0,
+      deferredReconciled: 0,
+      deferredFlagged: 0,
+      digestSent: false,
+    };
 
     // ── Check 1 — GRN overdue reminders ──
     const overdue = await prisma.deliveryRecord.findMany({
@@ -61,19 +68,50 @@ export async function GET(req: NextRequest) {
       (d) => businessDaysBetween(d.createdAt, now) > 5,
     );
     if (stale.length > 0) {
-      const lines = stale
+      const shown = stale.slice(0, 15);
+      const lines = shown
         .map(
           (d) =>
             `• ${d.grnRecord.po.channelPoNumber} (${d.grnRecord.po.channel.name}) ${d.sku.internalCode} short ${d.varianceQty}`,
         )
         .join("\n");
+      const more = stale.length > shown.length ? `\n…and ${stale.length - shown.length} more` : "";
       await sendWhatsAppAlert(
-        `⏰ ${stale.length} discrepancies open >5 business days:\n${lines}\nResolve: ${env.NEXT_PUBLIC_APP_URL}/reconciliation`,
+        `⏰ ${stale.length} discrepancies open >5 business days:\n${lines}${more}\nResolve: ${env.NEXT_PUBLIC_APP_URL}/reconciliation`,
       );
       summary.escalations = stale.length;
     }
 
-    // ── Check 3 — Morning digest (7 AM cycle only) ──
+    // ── Check 3 — Deferred reconciliation of settled portal GRNs ──
+    // Channel syncs park receipts as PENDING_RECONCILIATION and never diff them
+    // (quantities keep moving while a PO is live). Once a GRN has been quiet for
+    // 3 days, receipts have settled — diff it now. Quiet mode: no per-GRN
+    // WhatsApp ping and no auto-invoicing, so a historical backlog can never
+    // mass-email channels; one digest summarises anything flagged.
+    const settledCutoff = new Date(now.getTime() - 3 * 86_400_000);
+    const settled = await prisma.grnRecord.findMany({
+      where: { status: "PENDING_RECONCILIATION", receivedAt: { lt: settledCutoff } },
+      select: { id: true },
+      orderBy: { receivedAt: "asc" },
+      take: 50, // bounded per run; the hourly cadence drains any backlog
+    });
+    for (const g of settled) {
+      try {
+        const r = await reconcileGrn(g.id, { autoInvoice: false, notify: false });
+        summary.deferredReconciled++;
+        if (r.hasDiscrepancy) summary.deferredFlagged++;
+      } catch (err) {
+        console.error("[cron:check-timers] deferred reconcile failed", g.id, err);
+      }
+    }
+    if (summary.deferredFlagged > 0) {
+      await sendWhatsAppAlert(
+        `⚠️ Deferred reconciliation flagged ${summary.deferredFlagged}/${summary.deferredReconciled} settled GRNs. ` +
+          `Review: ${env.NEXT_PUBLIC_APP_URL}/reconciliation`,
+      );
+    }
+
+    // ── Check 4 — Morning digest (7 AM cycle only) ──
     if (now.getHours() === 7) {
       const since = new Date(now);
       since.setDate(since.getDate() - 1);

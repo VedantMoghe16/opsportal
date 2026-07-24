@@ -103,6 +103,28 @@ applied by the existing `docker-entrypoint.sh` → `prisma migrate deploy`.
 - No retroactive invoice correction — backfilled shortages are handled via the
   debit-note action, which is exactly what it exists for.
 
+## Addendum (2026-07-24, after first prod dry run)
+
+The dry run found 0/599 variances — by construction, not because things were
+clean: channel syncs (Zepto/Blinkit/Nykaa/Instamart) never call `reconcileGrn`.
+They set `allReceived → ACCEPTED` directly (zero variance by definition) and
+park partials as `PENDING_RECONCILIATION` forever — that's where the fill gap
+lives. Worse, every re-sync ran `discrepancy.deleteMany` + GRN recreate,
+wiping reconciliation work. Fixes:
+
+1. **Finalization latch** (`resetPortalGrn` in ingest-guard, used by
+   `captureLockedPoGrn` and all six direct rewrite sites): sync never deletes/
+   recreates a GRN that is human-entered, has left PENDING_RECONCILIATION, or
+   carries discrepancy rows.
+2. **Deferred reconciliation** (check-timers Check 3): PENDING_RECONCILIATION
+   GRNs quiet for 3+ days are reconciled 50 per run in quiet mode —
+   `reconcileGrn(id, { autoInvoice: false, notify: false })` — so a historical
+   backlog can never mass-email channels or spam WhatsApp; one digest per run.
+3. `reconcileGrn` gained those opts (default true/true; existing callers
+   unchanged) and no longer downgrades a CLOSED PO in the clean path.
+4. Backfill script also scans settled PENDING_RECONCILIATION GRNs.
+5. The >5-day escalation WhatsApp caps its list at 15 rows.
+
 ## Verification
 
 - `scripts/test-grn-variance.ts` (tsx, follows existing `scripts/test-*.ts`
